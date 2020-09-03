@@ -151,7 +151,7 @@ class Cell():
 				total_area += seg.area()
 		return total_area
 
-def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, param_set = 1):
+def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, params = 1):
 	###
 	### START SIMULATION CODE: 
 	### INPUTS:
@@ -159,8 +159,18 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, param_set = 1):
 	all_conns = all_conns.assign(num_syn=np.zeros(len(all_conns))) 	# num synapses
 	all_conns = all_conns.assign(lhn_SA=np.zeros(len(all_conns)))	# surface area
 
-	param_set = params
+	# 14 LHN by 17 PN plot
+	fig, axs = plt.subplots(nrows = 14, ncols = 17, sharex = True, sharey = True)
+	lhn_list = ['CML2', 'L1', 'L11', 'L12', 'L13', 'L15', 'ML3', 'ML8', 'ML9', 'V2', 'V3', 'local2', 'local5', 'local6']
+	pn_list = ['DA4l', 'DC1', 'DL4', 'DL5', 'DM1', 'DM3', 'DM4', 'DP1m', 'VA1v', 'VA2', 'VA4', 'VA6', 'VA7l', 'VC1', 'VC2', 'VL2a', 'VL2p']
+	[ax.set_xlim(0,20) for subrow in axs for ax in subrow]
+	[ax.set_ylim(0,7) for subrow in axs for ax in subrow]
+	plt.subplots_adjust(wspace=0, hspace=0)
+	[axs[0, i].set_title(pn_list[i]) for i in range(len(pn_list))]
+	[axs[i, 0].set_ylabel(lhn_list[i]) for i in range(len(lhn_list))]
+	[ax.set_frame_on(False) for subrow in axs for ax in subrow]
 
+	param_set = params
 	e_pas = epas # mV, reversal potential
 	c_m = cm #uF/cm^2
 	syn_strength = synstrength # uS, peak synaptic conductance
@@ -181,6 +191,11 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, param_set = 1):
 		### don't use, too similar to local5 params
 		R_a = 100
 		g_pas = 4.e-5
+	elif param_set == 4:
+		### 9/1: optimize to peak values
+		R_a = 350
+		g_pas = 1.8e-5
+		c_m = 1
 
 	for i in range(len(all_conns)):
 
@@ -195,11 +210,16 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, param_set = 1):
 
 		all_conns.loc[i, 'lhn_SA'] = cell1.surf_area()
 
-		if num > 0:
-			t_traces = []
-			v_soma = []
-			v_siz = []
+		### plot simulated and experimental traces
+		row = lhn_list.index(all_conns.lhn[i])
+		col = pn_list.index(all_conns.pn[i])
+		# read & plot experimental trace
+		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(all_conns.lhn[i], all_conns.pn[i]), header = None, dtype = np.float64)
+		t_exp = trace_exp[0]+1.25 # slightly adjust to align with rise time of EPSP
+		v_exp = trace_exp[1]
+		axs[row, col].plot(t_exp, v_exp, color = 'red')
 
+		if num > 0:
 			netstim.number = 1
 			netstim.start = 0
 
@@ -217,11 +237,21 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, param_set = 1):
 			#peak_index = v_s.index(max(v_s))
 			print("max amplitude: " + str(max(v_s) + 55))
 			#print("peak time: " + str(t[peak_index]))
+
+			axs[row, col].plot(t, v_s + 55, color = 'black')
 		else:
 			all_conns.loc[i, 'epsp_sim'] = 0 # EPSP size = 0 if no synapses
-			all_conns.loc[i, 'num_syn'] = 0
+			all_conns.loc[i, 'num_syn'] = 0	
 
-	all_conns.to_excel('20-09-01_all_conns_sim_params{}.xlsx'.format(str(params)))
+	props = ("g_pas = " + str(g_pas) + " S/cm^2, g_syn = " + str(syn_strength*1000) + 
+			" nS, c_m = " + str(c_m) + " uF/cm^2, R_a = " + str(R_a) + 
+			" Ohm-cm")
+	plt.suptitle(props + " [current params]", 
+				 fontsize = 24, y = 0.96)
+
+	plt.show()
+
+	#all_conns.to_excel('20-09-01_all_conns_sim_params{}.xlsx'.format(str(params)))
 
 ###
 ### t1, v1 the simulated trace, t2, v2 the experimental trace to fit to
@@ -246,88 +276,88 @@ def find_error(t1, v1, t2, v2):
 
 	return peak_err, trace_err
 
-#def param_search():
+def param_search():
 
-all_conns = pd.read_csv("20-08-27_all_conns.csv")
+	all_conns = pd.read_csv("20-08-27_all_conns.csv")
 
-syn_strength = 3.5e-5
-e_pas = -55 # mV
-# 20-08-31_larger_param_search
-c_m_s = np.arange(1.0, 1.21, 0.1) # uF/cm^2
-g_pas_s = np.arange(1.0e-5, 5.4e-5, 0.2e-5) # S/cm^2, round to 6 places
-R_a_s = np.arange(50, 351, 25) # ohm-cm
-# define g_pas and R_a
+	syn_strength = 3.5e-5
+	e_pas = -55 # mV
+	# 20-08-31_larger_param_search
+	c_m_s = np.arange(1.0, 1.21, 0.1) # uF/cm^2
+	g_pas_s = np.arange(1.0e-5, 5.4e-5, 0.2e-5) # S/cm^2, round to 6 places
+	R_a_s = np.arange(50, 351, 25) # ohm-cm
+	# define g_pas and R_a
 
-# 20-08-31_small_param_search: 11*6*105 = 6930 possibilities
-#g_pas_s = np.arange(1.2e-5, 5.4e-5, 0.4e-5) # S/cm^2, round to 6 places
-#R_a_s = np.arange(50, 350, 50) # ohm-cm
+	# 20-08-31_small_param_search: 11*6*105 = 6930 possibilities
+	#g_pas_s = np.arange(1.2e-5, 5.4e-5, 0.4e-5) # S/cm^2, round to 6 places
+	#R_a_s = np.arange(50, 350, 50) # ohm-cm
 
-sim_params = []
+	sim_params = []
 
-t_best = {}
-v_best = {}
+	t_best = {}
+	v_best = {}
 
-t_temp = {}
-v_temp = {}
+	t_temp = {}
+	v_temp = {}
 
-# iterate through all biophysical parameter combinations
-for c_m_i in c_m_s:
-	for g_pas_i in g_pas_s:
-		for R_a_i in R_a_s:
+	# iterate through all biophysical parameter combinations
+	for c_m_i in c_m_s:
+		for g_pas_i in g_pas_s:
+			for R_a_i in R_a_s:
 
-			sum_peak_err = 0
-			sum_trace_err = 0
-			# iterate through all connections
-			for i in range(len(all_conns)):
-				swc_path = "swc\\{}-{}.swc".format(all_conns.lhn[i], all_conns.lhn_id[i])
-				syn_path = "syn_locs\\{}-{}_{}-{}.csv".format(all_conns.lhn[i], all_conns.lhn_id[i], all_conns.pn[i], all_conns.pn_id[i])
+				sum_peak_err = 0
+				sum_trace_err = 0
+				# iterate through all connections
+				for i in range(len(all_conns)):
+					swc_path = "swc\\{}-{}.swc".format(all_conns.lhn[i], all_conns.lhn_id[i])
+					syn_path = "syn_locs\\{}-{}_{}-{}.csv".format(all_conns.lhn[i], all_conns.lhn_id[i], all_conns.pn[i], all_conns.pn_id[i])
 
-				cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
-				cell1.discretize_sections()
-				cell1.add_biophysics(R_a_i, c_m_i, g_pas_i, e_pas) # ra, cm, gpas, epas
-				cell1.tree = cell1.trace_tree()
-				synapses, netstim, netcons, num = cell1.add_synapses(syn_path, syn_strength)
+					cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+					cell1.discretize_sections()
+					cell1.add_biophysics(R_a_i, c_m_i, g_pas_i, e_pas) # ra, cm, gpas, epas
+					cell1.tree = cell1.trace_tree()
+					synapses, netstim, netcons, num = cell1.add_synapses(syn_path, syn_strength)
 
-				if num > 0:
-					t_traces = []
-					v_soma = []
+					if num > 0:
+						t_traces = []
+						v_soma = []
 
-					netstim.number = 1
-					netstim.start = 0
+						netstim.number = 1
+						netstim.start = 0
 
-					# activate synapses
-					h.load_file('stdrun.hoc')
-					x = h.cvode.active(True)
-					v_sim = h.Vector().record(cell1.axon[0](0.5)._ref_v) 		# soma membrane potential
-					t_sim = h.Vector().record(h._ref_t)                     # Time stamp vector
-					h.finitialize(-55 * mV)
-					h.continuerun(50*ms)
+						# activate synapses
+						h.load_file('stdrun.hoc')
+						x = h.cvode.active(True)
+						v_sim = h.Vector().record(cell1.axon[0](0.5)._ref_v) 		# soma membrane potential
+						t_sim = h.Vector().record(h._ref_t)                     # Time stamp vector
+						h.finitialize(-55 * mV)
+						h.continuerun(50*ms)
 
-					# read experimental trace
-					trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(all_conns.lhn[i], all_conns.pn[i]), header = None, dtype = np.float64)
-					t_exp = trace_exp[0]+1.25 # slightly adjust VA6 to align with rise time of EPSP
-					v_exp = trace_exp[1]-55
+						# read experimental trace
+						trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(all_conns.lhn[i], all_conns.pn[i]), header = None, dtype = np.float64)
+						t_exp = trace_exp[0]+1.25 # slightly adjust VA6 to align with rise time of EPSP
+						v_exp = trace_exp[1]-55
 
-					# calculate error of v_s to experimental trace
-					peak_err, trace_err = find_error(t_sim, v_sim, t_exp, v_exp)
+						# calculate error of v_s to experimental trace
+						peak_err, trace_err = find_error(t_sim, v_sim, t_exp, v_exp)
 
-					# increment sum_peak_err, sum_trace_err
-					sum_peak_err += peak_err
-					sum_trace_err += trace_err
-				else:
-					continue # if no synapses, don't register error (doesn't vary w/ params)
+						# increment sum_peak_err, sum_trace_err
+						sum_peak_err += peak_err
+						sum_trace_err += trace_err
+					else:
+						continue # if no synapses, don't register error (doesn't vary w/ params)
 
-			# save parameter values, (output trace indices), fit errors
-			params_toAppend = {}
-			params_toAppend.update(g_pas = g_pas_i, R_a = R_a_i, c_m = c_m_i, 
-							error_peak = sum_peak_err, 
-							error_trace = sum_trace_err, error_total = sum_peak_err+sum_trace_err)
+				# save parameter values, (output trace indices), fit errors
+				params_toAppend = {}
+				params_toAppend.update(g_pas = g_pas_i, R_a = R_a_i, c_m = c_m_i,
+								error_peak = sum_peak_err,
+								error_trace = sum_trace_err, error_total = sum_peak_err+sum_trace_err)
 
-			sim_params.append(params_toAppend)
+				sim_params.append(params_toAppend)
 
-		#print("finished running " + str(str(round(g_pas_i, 6))) + " S/cm^2")
+			#print("finished running " + str(str(round(g_pas_i, 6))) + " S/cm^2")
 
-sim_params = pd.DataFrame(sim_params)
+	sim_params = pd.DataFrame(sim_params)
 
 	#return sim_params
 # started at ~1:01 am, ended ~5:15 pm
