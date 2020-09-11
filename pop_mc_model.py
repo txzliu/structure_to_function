@@ -5,6 +5,7 @@
 import sys
 sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model")
 from run_local5 import *
+from datetime import date
 
 h.load_file('import3d.hoc')
 
@@ -146,7 +147,7 @@ class Cell():
 
 	def surf_area(self):
 		total_area = 0
-		for sec in self.axon:
+		for sec in h.allsec():
 			for seg in sec:
 				total_area += seg.area()
 		return total_area
@@ -196,6 +197,13 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, params = 1):
 		R_a = 350
 		g_pas = 1.8e-5
 		c_m = 1
+	elif param_set == 5:
+		### completed 9/10: optimize to peak values, after local5 back to v1.1
+		syn_strength = 4.5e-5
+		R_a = 350
+		g_pas = 1.8e-5
+		c_m = 1.2
+
 
 	for i in range(len(all_conns)):
 
@@ -249,9 +257,15 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, params = 1):
 	plt.suptitle(props + " [current params]", 
 				 fontsize = 24, y = 0.96)
 
+	all_conns.to_excel('{}_all_conns_sim_params{}.xlsx'.format(date.today().strftime("%Y-%m-%d"), str(params)))
+
 	plt.show()
 
-	all_conns.to_excel('20-09-06_all_conns_sim_params{}.xlsx'.format(str(params)))
+	plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'])
+	plt.xlabel("experimental EPSP peak (mV)")
+	plt.ylabel("simulated EPSP peak (mV)")
+	plt.plot([0, 7], [0, 7])
+	plt.show()
 
 ###
 ### t1, v1 the simulated trace, t2, v2 the experimental trace to fit to
@@ -282,11 +296,17 @@ def param_search():
 
 	e_pas = -55 # mV
 
-	# 20-09-04_change syn conductance: 1:28am to 
-	syn_strength_s = np.arange(0.0000325, 0.00005, 0.000005) # uS
+	# 20-09-10_refit after local5 reverted to v1.1
+	syn_strength_s = np.arange(0.000030, 0.000056, 0.000005) # uS
 	c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
 	g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
 	R_a_s = np.arange(50, 351, 75) # ohm-cm
+
+	# 20-09-04_change syn conductance: 1:28am to 
+	#syn_strength_s = np.arange(0.0000325, 0.00005, 0.000005) # uS
+	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+	#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
+	#R_a_s = np.arange(50, 351, 75) # ohm-cm
 	# define g_pas and R_a
 
 	# 20-08-31_larger_param_search
