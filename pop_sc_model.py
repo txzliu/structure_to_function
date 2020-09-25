@@ -6,6 +6,7 @@
 import sys
 sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model")
 from run_local5 import *
+plt.rcParams.update({'font.size': 30})
 
 ### directly solving conductance-based differential equation
 ### c_m dV/dt + g_pas (V - V_rest) = I(t)
@@ -47,7 +48,8 @@ factor = 1/peak_g
 def sc_neuron(v, t, g_pas, c_m, syn_strength, syn_count):
 	v_rev = -10 # mV
 	v_rest = -55 # mV
-	dvdt = 1e-6 * 1/c_m * (-1*syn_count*syn_strength*factor*(exp(-t/tau2) - exp(-t/tau1))*(v-v_rev) - g_pas*(v-v_rest))
+	# set units for dv/dt to mV/ms using 10^-6 factor
+	dvdt = 1e-6 * 1/c_m * (-1*syn_count*syn_strength*factor*(exp(-t/tau2) - exp(-t/tau1))*(v-v_rev) - g_pas*(v-v_rest)) #mV/ms
 	#print(dvdt)
 	return dvdt
 
@@ -56,7 +58,7 @@ def run_sim(g_pas = g_pas_def, c_m = c_m_def, syn_strength = syn_strength_def, s
 	t = np.linspace(0, 20, 41)
 	sol = odeint(sc_neuron, v0, t, args = (g_pas, c_m, syn_strength, syn_count))
 
-	plt.plot(t, sol[:,0])
+	#plt.plot(t, sol[:,0])
 	#plt.show()
 
 	return sol[:,0]
@@ -73,9 +75,106 @@ def num_syn_scaling():
 	plt.plot(np.arange(200), peak_vals)
 	plt.show()
 
-def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175):
+def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175, 
+					show_plot = False, show_scatter = False, save_excel = False):
 
 	all_conns = pd.read_csv("20-08-27_all_conns.csv")
+
+	g_pas_i = gpas # S/cm^2
+	c_m_i = cm # uF/cm^2
+	syn_strength_i = gsyn # nS, peak synaptic conductance
+
+	sim_traces = []
+	# iterate through all connections
+	for i in range(len(all_conns)):
+		curr_trace = {}
+		curr_trace.update(lhn = all_conns.lhn[i], pn=all_conns.pn[i])
+
+		num = all_conns.num_syn[i]
+		if version==1:
+			surf_area = 2314 # weighted average surf area of all LHN's
+		elif version==2:
+			surf_area = all_conns.lhn_SA[i] # unique SA for each LHN body ID
+
+		if num > 0:
+
+			# calculate overall (non-surf-area-normalized) parameters
+			g_pas_o = g_pas_i * (1/10000)**2 * surf_area * 1e9 # nS, note (1cm/10000um)
+			c_m_o = c_m_i * (1/10000)**2 * surf_area # uF
+
+			t = np.linspace(0, 20, 41)
+			v_s = run_sim(g_pas=g_pas_o, c_m=c_m_o, syn_strength=syn_strength_i, syn_count=num)
+
+			all_conns.loc[i, 'epsp_sim'] = float(max(v_s)+55)
+
+			curr_trace.update(t_sim = t, v_sim = v_s, v_sim_peak = max(v_s)+55, 
+							  v_exp_peak = all_conns.epsp_exp[i])
+
+		else:
+			all_conns.loc[i, 'epsp_sim'] = 0 # EPSP size = 0 if no synapses
+
+			curr_trace.update(t_sim = [0, 20], v_sim = [-55, -55], v_sim_peak = 0, 
+							  v_exp_peak = all_conns.epsp_exp[i])
+
+		sim_traces.append(curr_trace)
+
+	### average together traces: find instances of each connection, then average each set of instances
+	conn_indices = {} # keys are tuples of LHN, PN names; values are indices of the connections
+	for i in range(len(sim_traces)):
+		curr_conn = (sim_traces[i]["lhn"], sim_traces[i]["pn"])
+		if curr_conn not in conn_indices:
+			conn_indices[curr_conn] = [i]
+		else:
+			conn_indices[curr_conn].append(i)
+
+	sim_avgs = []
+	for conn in conn_indices:
+		toAppend = {}
+		curr_lhn = conn[0]
+		curr_pn = conn[1]
+		conn_peaks = [sim_traces[i]["v_sim_peak"] for i in conn_indices[conn]]
+		toAppend.update(lhn = curr_lhn, pn = curr_pn, epsp_sim = np.mean(conn_peaks),
+						epsp_exp = sim_traces[conn_indices[conn][0]]["v_exp_peak"])
+		sim_avgs.append(toAppend)
+
+	sim_avgs = pd.DataFrame(sim_avgs)
+
+	# compute normalized RSS error
+	sum_peak_err = 0
+	for i in range(len(sim_avgs)):
+		normalized_resid = (sim_avgs.loc[i, 'epsp_sim'] - sim_avgs.loc[i, 'epsp_exp']) / sim_avgs.loc[i, 'epsp_exp']
+		sim_avgs.loc[i, 'resid'] = normalized_resid * sim_avgs.loc[i, 'epsp_exp']
+		sim_avgs.loc[i, 'norm_resid'] = normalized_resid
+		if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+			sum_peak_err += np.abs(normalized_resid)
+		#else:
+			#print("skipping {}, {}".format(sim_avgs.loc[i, 'lhn'], sim_avgs.loc[i, 'pn']))
+		#sum_peak_err += normalized_resid**2
+
+	if show_plot:
+		plot_traces(sim_traces, cm, gsyn, gpas)
+	if save_excel:
+		all_conns.to_excel('{}_scsim_v{}_each_inst.xlsx'.format(date.today().strftime("%y-%m-%d"), str(version)))
+		sim_avgs.to_excel('{}_scsim_v{}_avgs.xlsx'.format(date.today().strftime("%y-%m-%d"), str(version)))
+	if show_scatter:
+		plt.rcParams["figure.figsize"] = (15,15)
+
+		plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
+		plt.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], color = 'red')
+		plt.xlabel("experimental EPSP peak (mV)")
+		plt.ylabel("simulated EPSP peak (mV)")
+		plt.plot([0, 7], [0, 7])
+		props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(gsyn, 4)) + 
+			" nS, c_m = " + str(cm) + " uF/cm^2")
+		plt.suptitle(props + " [current params]", 
+				 fontsize = 24, y = 0.96)
+		plt.show()
+
+	return sim_traces, sim_avgs, sum_peak_err
+
+def plot_traces(sim_traces, cm, gsyn, gpas):
+
+	plt.rcParams["figure.figsize"] = (40,35)
 
 	# 14 LHN by 17 PN plot
 	fig, axs = plt.subplots(nrows = 14, ncols = 17, sharex = True, sharey = True)
@@ -88,56 +187,28 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175):
 	[axs[i, 0].set_ylabel(lhn_list[i]) for i in range(len(lhn_list))]
 	[ax.set_frame_on(False) for subrow in axs for ax in subrow]
 
-	g_pas_i = gpas # S/cm^2
-	c_m_i = cm # uF/cm^2
-	syn_strength_i = gsyn # nS, peak synaptic conductance
+	for i in range(len(sim_traces)):
 
-	# iterate through all connections
-	for i in range(len(all_conns)):
-
-		num = all_conns.num_syn[i]
-		if version==1:
-			surf_area = 2230 # weighted average surf area of all LHN's
-		elif version==2:
-			surf_area = all_conns.lhn_SA[i] # unique SA for each LHN body ID
-
-		### plot experimental traces
-		row = lhn_list.index(all_conns.lhn[i])
-		col = pn_list.index(all_conns.pn[i])
+		### plot simulated and experimental traces
+		row = lhn_list.index(sim_traces[i]["lhn"])
+		col = pn_list.index(sim_traces[i]["pn"])
 		# read & plot experimental trace
-		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(all_conns.lhn[i], all_conns.pn[i]), header = None, dtype = np.float64)
+		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(sim_traces[i]["lhn"], sim_traces[i]["pn"]), header = None, dtype = np.float64)
 		t_exp = trace_exp[0]+1.25 # slightly adjust to align with rise time of EPSP
 		v_exp = trace_exp[1]
 		axs[row, col].plot(t_exp, v_exp, color = 'red')
 
-		if num > 0:
+		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'black')
 
-			# calculate overall (non-surf-area-normalized) parameters
-			g_pas_o = g_pas_i * (1/10000)**2 * surf_area * 1e9 # nS, note (1cm/10000um)
-			c_m_o = c_m_i * (1/10000)**2 * surf_area # uF
-
-			t_sim = np.linspace(0, 20, 41)
-			v_sim = run_sim(g_pas=g_pas_o, c_m=c_m_o, syn_strength=syn_strength_i, syn_count=num)
-
-			all_conns.loc[i, 'epsp_sim'] = float(max(v_sim)+55)
-
-			axs[row, col].plot(t_sim, v_sim + 55, color = 'black')
-
-		else:
-			all_conns.loc[i, 'epsp_sim'] = 0 # EPSP size = 0 if no synapses
-
-	props = ("g_pas = " + str(g_pas_i) + " S/cm^2, g_syn = " + str(round(syn_strength_i, 5)) + 
-			" nS, c_m = " + str(c_m_i) + " uF/cm^2")
+	props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(gsyn, 4)) + 
+			" nS, c_m = " + str(cm) + " uF/cm^2")
 	plt.suptitle(props + " [current params]", 
 				 fontsize = 24, y = 0.96)
 
 	plt.show()
 
-	all_conns.to_excel('{}_scsim_v{}.xlsx'.format(date.today().strftime("%Y-%m-%d"), str(version)))
-
 ###
 ### t1, v1 the simulated trace, t2, v2 the experimental trace to fit to
-### weight error from VL2a x3 to normalize amplitudes
 ###
 def find_error(t1, v1, t2, v2):
 
@@ -150,16 +221,29 @@ def find_error(t1, v1, t2, v2):
 	return peak_err
 
 ###
-### search for optimal biophysical parameter set, same parameters for entire population
+### search for optimal biophysical parameter set
+### vers = 1: same parameters for entire population
+### vers = 2: parameters vary based on each LHN's surf area
 ###
-def param_search_v1():
+def param_search(vers):
 
 	all_conns = pd.read_csv("20-08-27_all_conns.csv")
 
+	# 20-09-19 error includes NON-NORMALIZED absolute value of residual summed per connection, skipping local5/vl2a
+	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
+	c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+	syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
+
+	# 20-09-15 error is absolute value of residual summed per connection
+	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
+	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
+
 	# 20-09-10 revert local5 to v1.1 parameter search
-	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.4e-5) # S/cm^2, round to 6 places
-	c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
+	# 20-09-12 rerun after error changed to average per connection
+	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.4e-5) # S/cm^2, round to 6 places
+	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
 
 	# 20-09-08 initial parameter search
 	#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
@@ -174,52 +258,58 @@ def param_search_v1():
 		for c_m_i in c_m_s:
 			for g_pas_i in g_pas_s:
 
-				sum_peak_err = 0
-				# iterate through all connections
-				for i in range(len(all_conns)):
+				### all errors skip local5/vl2a
+				sum_peak_err = 0 # sum of absolute values of normalized residuals
+				sum_peak_err_notnorm = 0 # sum of absolute values of non-normalized residuals
+				sum_peak_err_rss = 0 # sum of squares of normalized residuals
+				
+				### doesn't skip local5/vl2a
+				sum_peak_err_noskip = 0 # sum of absolute values of normalized residuals
+				sum_peak_err_notnorm_noskip = 0 # sum of absolute values of non-normalized residuals
+					
+				sim_traces, sim_avgs, rss_err = find_peak_vals(version = vers, cm = c_m_i, gsyn = syn_strength_i,
+													  gpas = g_pas_i, save_excel = False, show_scatter = False)
 
-					num = all_conns.num_syn[i]
-					surf_area = 2349 # weighted average surf area of all LHN's, 2349 after local5 to v1.1
+				for i in range(len(sim_avgs)):
+					normalized_resid = (sim_avgs.loc[i, 'epsp_sim'] - sim_avgs.loc[i, 'epsp_exp']) / sim_avgs.loc[i, 'epsp_exp']
+					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+						sum_peak_err += np.abs(normalized_resid) # normalized residual
 
-					if num > 0:
+					sum_peak_err_noskip += np.abs(normalized_resid) # normalized residual
+					sum_peak_err_notnorm_noskip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
 
-						# calculate overall (non-surf-area-normalized) parameters
-						g_pas_o = g_pas_i * (1/10000)**2 * surf_area * 1e9 # nS, note (1cm/10000um)
-						c_m_o = c_m_i * (1/10000)**2 * surf_area # uF
-
-						t_sim = np.linspace(0, 20, 41)
-						v_sim = run_sim(g_pas=g_pas_o, c_m=c_m_o, syn_strength=syn_strength_i, syn_count=num)
-
-						# read experimental trace
-						trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(all_conns.lhn[i], all_conns.pn[i]), header = None, dtype = np.float64)
-						t_exp = trace_exp[0]+1.25 # slightly adjust VA6 to align with rise time of EPSP
-						v_exp = trace_exp[1]-55
-
-						# calculate error of v_s to experimental trace
-						peak_err = find_error(t_sim, v_sim, t_exp, v_exp)
-
-						# increment sum_peak_err
-						sum_peak_err += peak_err
-					else:
-						continue # if no synapses, don't register error (doesn't vary w/ params)
-
+					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+						sum_peak_err_notnorm += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+						sum_peak_err_rss += normalized_resid**2 # squared normalized residual
+					
 				# save parameter values, (output trace indices), fit errors
 				params_toAppend = {}
 				params_toAppend.update(g_syn = syn_strength_i, g_pas = g_pas_i, 
 								c_m = c_m_i,
-								error_peak = sum_peak_err)
+								error_peak = sum_peak_err, error_peak_noskip = sum_peak_err_noskip,
+								error_peak_notnorm = sum_peak_err_notnorm,
+								error_peak_rss = sum_peak_err_rss)
 
 				sim_params.append(params_toAppend)
 
-			print("g_syn: finished with " + str(round(syn_strength_i, 5)) + " nS")
+		print("g_syn: finished with " + str(round(syn_strength_i, 5)) + " nS")
 
 	sim_params = pd.DataFrame(sim_params)
+
+	# plot lowest error trace: 
+	low_err = np.argsort(sim_params["error_peak_notnorm"])[0]
+	#find_peak_vals(version = vers, cm = sim_params.loc[low_err, "c_m"], gsyn = sim_params.loc[low_err, "g_syn"],
+	#				gpas = sim_params.loc[low_err, "g_pas"], save_excel = True, show_scatter = True, show_plot = True)
+	print("lowest error is {}".format(sim_params.loc[low_err, "error_peak_notnorm"]))
+
+	sim_params.to_excel('{}_scfit_v{}_{}.xlsx'.format(date.today().strftime("%y-%m-%d"), str(vers), str(len(sim_params))))
 
 	return sim_params
 
 # for the optimal parameter set, run and extract peak values for all connections, plot vs MC model
 
-###
+### DEPRECATED:
 ### search for optimal biophysical parameter set, parameters vary based on each LHN's surf area
 ###
 def param_search_v2():

@@ -232,7 +232,7 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 
 			#v_z = h.Vector().record(p_siz(siz_loc)._ref_v)		# putative SIZ membrane potential
 			t = h.Vector().record(h._ref_t)                     # Time stamp vector
 			h.finitialize(-55 * mV)
-			h.continuerun(100*ms)
+			h.continuerun(40*ms)
 
 			all_conns.loc[i, 'epsp_sim'] = float(max(v_s)+55)
 			all_conns.loc[i, 'num_syn'] = num
@@ -272,10 +272,23 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 
 
 	sim_avgs = pd.DataFrame(sim_avgs)
 
+	# compute normalized RSS error
+	sum_peak_err = 0
+	for i in range(len(sim_avgs)):
+		normalized_resid = (sim_avgs.loc[i, 'epsp_sim'] - sim_avgs.loc[i, 'epsp_exp']) / sim_avgs.loc[i, 'epsp_exp']
+		sim_avgs.loc[i, 'resid'] = normalized_resid * sim_avgs.loc[i, 'epsp_exp']
+		sim_avgs.loc[i, 'norm_resid'] = normalized_resid
+		if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+			sum_peak_err += np.abs(normalized_resid)
+		#else:
+			#print("skipping {}, {}".format(sim_avgs.loc[i, 'lhn'], sim_avgs.loc[i, 'pn']))
+		#sum_peak_err += normalized_resid**2
+
 	if show_plot:
 		plot_traces(sim_traces, cm, synstrength, ra, gpas)
 	if save_excel:
-		all_conns.to_excel('{}_mcsim_params{}.xlsx'.format(date.today().strftime("%Y-%m-%d"), str(params)))
+		all_conns.to_excel('{}_mcsim_params{}_each_inst.xlsx'.format(date.today().strftime("%y-%m-%d"), str(params)))
+		sim_avgs.to_excel('{}_mcsim_params{}_avgs.xlsx'.format(date.today().strftime("%y-%m-%d"), str(params)))
 	if show_scatter:
 		plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
 		plt.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], color = 'red')
@@ -351,14 +364,22 @@ def param_search():
 
 	# next try not normalizing the error? 
 
-	# 20-09-11_after changing error term to peak residual sum of squares PER connection: 
+	# 20-09-13_broader search range: 
+	# 4 x 4 x 12 x 7 = 1344 + 144 from previous search!
+	syn_strength_s = [3.0e-5, 4.0e-5, 5.0e-5, 5.5e-5]
+	c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+	g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
+	R_a_s = np.arange(50, 351, 50) # ohm-cm
+
+	# 20-09-12_after changing error term to peak residual sum of squares PER connection: 
 	# 2 x 3 x 6 x 4 = 144
-	syn_strength_s = np.arange(0.000035, 0.000046, 0.00001) # uS
-	c_m_s = np.arange(0.6, 1.21, 0.3) # uF/cm^2
-	g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.8e-5) # S/cm^2, round to 6 places
-	R_a_s = np.arange(50, 351, 100) # ohm-cm
+	#syn_strength_s = np.arange(0.000035, 0.000046, 0.00001) # uS
+	#c_m_s = np.arange(0.6, 1.21, 0.3) # uF/cm^2
+	#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.8e-5) # S/cm^2, round to 6 places
+	#R_a_s = np.arange(50, 351, 100) # ohm-cm
 
 	# 20-09-10_refit after local5 reverted to v1.1
+	# 1440
 	#syn_strength_s = np.arange(0.000030, 0.000056, 0.000005) # uS
 	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
 	#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
@@ -373,9 +394,8 @@ def param_search():
 				for R_a_i in R_a_s:
 
 					sum_peak_err = 0
-					sum_trace_err = 0
 					
-					sim_traces, sim_avgs = find_peak_vals(cm = c_m_i, ra = R_a_i, synstrength = syn_strength_i,
+					sim_traces, sim_avgs, rss_err = find_peak_vals(cm = c_m_i, ra = R_a_i, synstrength = syn_strength_i,
 														  gpas = g_pas_i, save_excel = False, show_scatter = False)
 
 					sum_peak_err = 0
