@@ -1,4 +1,8 @@
 
+### the file containing list of LHN and PN body IDs and EPSP sizes
+### was 20-08-27_all_conns.csv prior to final body ID refresh on 20-09-26
+conn_file = "20-09-26_all_conns.csv"
+
 ###
 ### for each unique PN to LHN connection, simulate a single compartment cell
 ###
@@ -25,7 +29,7 @@ plt.rcParams.update({'font.size': 30})
 
 from scipy.integrate import odeint
 from math import log, exp
-from datetime import date
+from datetime import datetime
 
 # parameters, default at local5 values (only used if run_sim is run directly)
 num_syn_def = 2 # number of synapses
@@ -78,7 +82,7 @@ def num_syn_scaling():
 def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175, 
 					show_plot = False, show_scatter = False, save_excel = False):
 
-	all_conns = pd.read_csv("20-08-27_all_conns.csv")
+	all_conns = pd.read_csv(conn_file)
 
 	g_pas_i = gpas # S/cm^2
 	c_m_i = cm # uF/cm^2
@@ -92,7 +96,8 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 
 		num = all_conns.num_syn[i]
 		if version==1:
-			surf_area = 2314 # weighted average surf area of all LHN's
+			surf_area = 2367 # weighted average surf area of all LHN's
+			# update 20-09-26 after refreshing body IDs
 		elif version==2:
 			surf_area = all_conns.lhn_SA[i] # unique SA for each LHN body ID
 
@@ -154,20 +159,28 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 	if show_plot:
 		plot_traces(sim_traces, cm, gsyn, gpas)
 	if save_excel:
-		all_conns.to_excel('{}_scsim_v{}_each_inst.xlsx'.format(date.today().strftime("%y-%m-%d"), str(version)))
-		sim_avgs.to_excel('{}_scsim_v{}_avgs.xlsx'.format(date.today().strftime("%y-%m-%d"), str(version)))
+		all_conns.to_excel('{}_scsim_v{}_each_inst.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(version)))
+		sim_avgs.to_excel('{}_scsim_v{}_avgs.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(version)))
 	if show_scatter:
 		plt.rcParams["figure.figsize"] = (15,15)
 
-		plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
-		plt.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], color = 'red')
-		plt.xlabel("experimental EPSP peak (mV)")
-		plt.ylabel("simulated EPSP peak (mV)")
-		plt.plot([0, 7], [0, 7])
-		props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(gsyn, 4)) + 
-			" nS, c_m = " + str(cm) + " uF/cm^2")
+		fig, ax = plt.subplots(nrows = 1, ncols = 1)
+
+		#plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
+		ax.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], color = 'black')
+		ax.set_xlabel("experimental EPSP peak (mV)")
+		ax.set_ylabel("simulated EPSP peak (mV)")
+		ax.plot([0, 7], [0, 7], color = 'grey', ls = '--')
+		props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(synstrength*1000, 4)) + 
+			" nS, c_m = " + str(cm) + " uF/cm^2, R_a = " + str(ra) + 
+			" Ohm-cm")
 		plt.suptitle(props + " [current params]", 
 				 fontsize = 24, y = 0.96)
+
+		draw()
+
+		fig.savefig('{}_scsim_v{}_scatter.svg'.format(date.today().strftime("%y-%m-%d"), str(version)))
+
 		plt.show()
 
 	return sim_traces, sim_avgs, sum_peak_err
@@ -194,7 +207,7 @@ def plot_traces(sim_traces, cm, gsyn, gpas):
 		col = pn_list.index(sim_traces[i]["pn"])
 		# read & plot experimental trace
 		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(sim_traces[i]["lhn"], sim_traces[i]["pn"]), header = None, dtype = np.float64)
-		t_exp = trace_exp[0]+1.25 # slightly adjust to align with rise time of EPSP
+		t_exp = trace_exp[0]  # don't adjust experimental rise, since sim rises at t=0
 		v_exp = trace_exp[1]
 		axs[row, col].plot(t_exp, v_exp, color = 'red')
 
@@ -227,12 +240,22 @@ def find_error(t1, v1, t2, v2):
 ###
 def param_search(vers):
 
-	all_conns = pd.read_csv("20-08-27_all_conns.csv")
+	all_conns = pd.read_csv(conn_file)
 
-	# 20-09-19 error includes NON-NORMALIZED absolute value of residual summed per connection, skipping local5/vl2a
-	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
+	start_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
+
+	# 20-09-26 after refreshing body IDs after Pasha's final revisions, saving all_resids
+	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.1e-5) # S/cm^2, round to 6 places
 	c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
 	syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
+	# v1 fit: start time: 20-09-27-21:04:20, end time: 20-09-28 04:21:23
+	# v2 fit: start time: 20-09-28-04:21:23, end time: 20-09-28 10:37:06
+	# sim_params and all_resids for v1 and v2 saved in '20-09-28_scfits_all_resids.out'
+
+	# 20-09-19 error includes NON-NORMALIZED absolute value of residual summed per connection, skipping local5/vl2a
+	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
+	#c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+	#syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
 
 	# 20-09-15 error is absolute value of residual summed per connection
 	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
@@ -251,6 +274,7 @@ def param_search(vers):
 	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
 
 	sim_params = []
+	all_resids = []
 
 	# iterate through parameter sets
 	# iterate through all biophysical parameter combinations
@@ -258,7 +282,7 @@ def param_search(vers):
 		for c_m_i in c_m_s:
 			for g_pas_i in g_pas_s:
 
-				### all errors skip local5/vl2a
+				### following errors skip local5/vl2a
 				sum_peak_err = 0 # sum of absolute values of normalized residuals
 				sum_peak_err_notnorm = 0 # sum of absolute values of non-normalized residuals
 				sum_peak_err_rss = 0 # sum of squares of normalized residuals
@@ -289,9 +313,13 @@ def param_search(vers):
 								c_m = c_m_i,
 								error_peak = sum_peak_err, error_peak_noskip = sum_peak_err_noskip,
 								error_peak_notnorm = sum_peak_err_notnorm,
-								error_peak_rss = sum_peak_err_rss)
+								error_peak_rss = sum_peak_err_rss, 
+								error_peak_notnorm_noskip = sum_peak_err_notnorm_noskip,
+								all_resids_index = len(all_resids))
 
+				# save overall statistics AND residuals per connection for this parameter set
 				sim_params.append(params_toAppend)
+				all_resids.append(sim_avgs) 
 
 		print("g_syn: finished with " + str(round(syn_strength_i, 5)) + " nS")
 
@@ -303,79 +331,133 @@ def param_search(vers):
 	#				gpas = sim_params.loc[low_err, "g_pas"], save_excel = True, show_scatter = True, show_plot = True)
 	print("lowest error is {}".format(sim_params.loc[low_err, "error_peak_notnorm"]))
 
-	sim_params.to_excel('{}_scfit_v{}_{}.xlsx'.format(date.today().strftime("%y-%m-%d"), str(vers), str(len(sim_params))))
+	#sim_params.to_excel('{}_scfit_v{}_{}.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(vers), str(len(sim_params))))
 
-	return sim_params
+	end_time = datetime.now().strftime('%y-%m-%d %H:%M:%S')
+	print("start time: {}, end time: {}".format(start_time, end_time))
 
-# for the optimal parameter set, run and extract peak values for all connections, plot vs MC model
+	return sim_params, all_resids
 
-### DEPRECATED:
-### search for optimal biophysical parameter set, parameters vary based on each LHN's surf area
+# all_resids = second output of the method above, then can execute shelving: 
+'''
+	### to shelve something: 
+	toshelve = ['all_resids']
+	shelf_name = '20-09-27_scfit_v{}_all_resids.out'.format(str(vers))
+	shelf = shelve.open(shelf_name, 'n')
+	for key in dir():
+		try: 
+			if key in toshelve: 
+				shelf[key] = globals()[key]
+		except TypeError:
+			#
+        	# __builtins__, my_shelf, and imported modules can not be shelved.
+        	#
+			print('ERROR shelving: {0}'.format(key))
+	shelf.close()
+
+	### to reopen:
+	my_shelf = shelve.open(shelfname)
+	for key in my_shelf:
+		globals()[key]=my_shelf[key]
+	my_shelf.close()
+'''
+
 ###
-def param_search_v2():
-	
-	all_conns = pd.read_csv("20-08-27_all_conns.csv")
+### cross validation
+### sim_params: dataframe: (# parameter sets) x (# of biophysical params, # of error types summed over all connections)
+### all_resids: [# of parameter sets] -> 
+####				each element contains raw residual (sim epsp peak - exp epsp peak) for each connection
 
-	# 20-09-10 revert local5 to v1.1 parameter search
-	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.4e-5) # S/cm^2, round to 6 places
-	c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
+### for 20-10-01 loocv v1 and v2 75075:
+### myshelf= shelve.open('20-09-28_scfits_all_resids.out')
+### cv1, cv2 = cross_val(sim_params_v1, all_resids_v1), cross_val(sim_params_v2, all_resids_v2)
 
-	# 20-09-08 initial parameter search
-	#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
-	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
+def cross_val(sim_params, all_resids):
 
-	sim_params = []
+	# save best param sets from each cross-validated fold
+	cv_top_params = []
 
-	# iterate through parameter sets
-	# iterate through all biophysical parameter combinations
-	for syn_strength_i in syn_strength_s:
-		for c_m_i in c_m_s:
-			for g_pas_i in g_pas_s:
+	# for each iteration, leave out i'th connection in error term
+	for i in range(all_resids[0].shape[0]):
+		# track new error for each parameter set
+		loocv_errors = []
 
-				sum_peak_err = 0
-				# iterate through all connections
-				for i in range(len(all_conns)):
+		# iterate through each parameter set and recalculate error
+		for j in range(sim_params.shape[0]):
+			cv_error = 0
 
-					num = all_conns.num_syn[i]
-					surf_area = all_conns.lhn_SA[i] # unique SA for each LHN body ID
+			# recalculate new error: 
+			for k in range(all_resids[j].shape[0]):
+				# skip connection that's being left out
+				# currently using residual sum of absolute values, non-normalized
+				if k != i:
+					cv_error += np.abs(all_resids[j].resid[k])
 
-					if num > 0:
+			loocv_errors.append(cv_error)
 
-						# calculate overall (non-surf-area-normalized) parameters
-						g_pas_o = g_pas_i * (1/10000)**2 * surf_area * 1e9 # nS, note (1cm/10000um)
-						c_m_o = c_m_i * (1/10000)**2 * surf_area # uF
+		lowest_error_params_ind = np.array(loocv_errors).argsort()[0]
+		lowest_error_params = sim_params.loc[lowest_error_params_ind]
 
-						t_sim = np.linspace(0, 20, 41)
-						v_sim = run_sim(g_pas=g_pas_o, c_m=c_m_o, syn_strength=syn_strength_i, syn_count=num)
+		cv_top_params.append(dict(lowest_error_params))
 
-						# read experimental trace
-						trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(all_conns.lhn[i], all_conns.pn[i]), header = None, dtype = np.float64)
-						t_exp = trace_exp[0]+1.25 # slightly adjust VA6 to align with rise time of EPSP
-						v_exp = trace_exp[1]-55
+	cv_top_params = pd.DataFrame(cv_top_params)
 
-						# calculate error of v_s to experimental trace
-						peak_err = find_error(t_sim, v_sim, t_exp, v_exp)
+	# do some computation on the cross validated params
+	# print out mean and SD of cross validated params
+	print("top CV fits: c_m: {} p.m. {}".format(str(mean(cv_top_params.c_m)), str(np.std(cv_top_params.c_m))))
+	print("across all params: c_m: {} p.m. {}".format(str(mean(sim_params.c_m)), str(np.std(sim_params.c_m))))
 
-						# increment sum_peak_err
-						sum_peak_err += peak_err
-					else:
-						continue # if no synapses, don't register error (doesn't vary w/ params)
+	print("top CV fits: g_pas: {} p.m. {}".format(str(mean(cv_top_params.g_pas)), str(np.std(cv_top_params.g_pas))))
+	print("across all params: g_pas: {} p.m. {}".format(str(mean(sim_params.g_pas)), str(np.std(sim_params.g_pas))))
 
-				# save parameter values, (output trace indices), fit errors
-				params_toAppend = {}
-				params_toAppend.update(g_syn = syn_strength_i, g_pas = g_pas_i, 
-								c_m = c_m_i,
-								error_peak = sum_peak_err)
+	print("top CV fits: g_syn: {} p.m. {}".format(str(mean(cv_top_params.g_syn)), str(np.std(cv_top_params.g_syn))))
+	print("across all params: g_syn: {} p.m. {}".format(str(mean(sim_params.g_syn)), str(np.std(sim_params.g_syn))))
 
-				sim_params.append(params_toAppend)
+	return cv_top_params
 
-			print("g_syn: finished with " + str(str(round(syn_strength_i, 5))) + " nS")
+###
+### plot spread of optimal params from a LOOCV output
 
-	sim_params = pd.DataFrame(sim_params)
+### cv1 and cv2 variables from previous cross validation of 75075 fits
+### loaded 20-10-04_scfit_v1_v2_loocv.out
+def plot_opt_params(cv):
 
-	return sim_params
+	fig, axs = plt.subplots(nrows = 2, ncols = 2)
+
+	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.1e-5) # S/cm^2, round to 6 places
+	c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+	syn_strength_s = np.arange(0.0025, 0.1, 0.0005)
+
+	bins = np.arange(0.0025, 0.1, 0.0005)
+	axs[0,0].hist(cv.g_syn, bins)
+	axs[0,0].set_xlabel("g_syn (uS)")
+	axs[0,0].set_ylabel("freq.")
+
+	bins = np.arange(1.0e-5, 6.5e-5, 0.1e-5) # S/cm^2, round to 6 places
+	axs[0,1].hist(cv.g_pas, bins)
+	axs[0,1].set_xlabel("g_pas (S/cm^2))")
+	axs[0,1].set_ylabel("freq.")	
+
+	bins = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+	axs[1,0].hist(cv.c_m, bins)
+	axs[1,0].set_xlabel("c_m (uF/cm^2)")
+	axs[1,0].set_ylabel("freq.")	
+
+	#axs[1,1].scatter(sim_params["R_a"], sim_params[error])
+	#axs[1,1].set_xlabel("R_a (ohm-cm)")
+	#axs[1,1].set_ylabel("freq.")	
+
+	plt.suptitle("Optimal parameter spread from L.O.O. Cross Validation")
+	plt.show()
+
+# for sc v1: yay, things are actually clustered!!
+# top CV fits: c_m: 0.6 p.m. 0.0
+#across all params: c_m: 0.8999999999999999 p.m. 0.1999999999999944
+#top CV fits: g_pas: 6.13666666666667e-05 p.m. 2.414999424890667e-06
+#across all params: g_pas: 3.700000000000002e-05 p.m. 1.5874507866388193e-05
+#top CV fits: g_syn: 0.017933333333333332 p.m. 0.0005587684871413408
+#across all params: g_syn: 0.051000000000000004 p.m. 0.028145455524235523
+
 
 # 20-09-08 initial runs:
 #sim_params1, sim_params2 = param_search_v1(), param_search_v2()

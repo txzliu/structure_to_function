@@ -1,4 +1,8 @@
 
+### the file containing list of LHN and PN body IDs and EPSP sizes
+### was 20-08-27_all_conns.csv prior to final body ID refresh on 20-09-26
+conn_file = "20-09-26_all_conns.csv"
+
 ### NOTE: file should be run from directory:
 ### C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model\\population_model\\
 
@@ -152,12 +156,34 @@ class Cell():
 				total_area += seg.area()
 		return total_area
 
-def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 4.4e-5, params = 0,
-					save_excel = False, show_plot = False, show_scatter = True):
+def time_to_percent_peak(t, v, perc):
+	'''
+		Given a time trace, voltage trace, and a percentage X%, give the closest time in the
+		time trace to X% of the voltage's peak amplitude. 
+	'''
+	base, peak = min(v), max(v)
+	peak_loc = np.where(np.array(v) == peak)[0][0] # index of peak location
+	perc_of_peak = perc * (peak - base) + base # value of percent of peak amplitude
+	# interpolate t value where v reaches inputted percent of peak amplitude
+	time_of_perc = np.interp(perc_of_peak, np.array(v)[0:peak_loc], np.array(t)[0:peak_loc])
+	# subsets portion of trace up to the peak
+	#ind_of_perc = np.abs(np.array(v)[0:peak_loc] - perc_of_peak).argmin() 
+	#time_of_perc = np.array(t)[ind_of_perc]
+	return time_of_perc
+
+# previously was local5 params: epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 4.4e-5
+# now error peak no skip params
+def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 5.8e-5, params = 'abs_norm_noskip',
+					save_excel = False, show_plot = False, show_scatter = False, show_kinetics_scatter = False):
+	'''
+		Given biophysical parameter inputs, output the resulting simulated EPSPs across the 
+		entire population. 
+	'''
+
 	###
 	### START SIMULATION CODE: 
 	### INPUTS:
-	all_conns = pd.read_csv("20-08-27_all_conns.csv")
+	all_conns = pd.read_csv(conn_file)
 	all_conns = all_conns.assign(num_syn=np.zeros(len(all_conns))) 	# num synapses
 	all_conns = all_conns.assign(lhn_SA=np.zeros(len(all_conns)))	# surface area
 
@@ -205,6 +231,7 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 
 		R_a = 350
 		g_pas = 3.4e-5
 
+	### run through all PN-LHN instances, simulate unitary EPSP and track peak amplitude 
 	sim_traces = []
 	for i in range(len(all_conns)):
 		curr_trace = {}
@@ -236,18 +263,23 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 
 
 			all_conns.loc[i, 'epsp_sim'] = float(max(v_s)+55)
 			all_conns.loc[i, 'num_syn'] = num
-			#peak_index = v_s.index(max(v_s))
-			#print("max amplitude: " + str(max(v_s) + 55))
-			#print("peak time: " + str(t[peak_index]))
+
+			# KINETICS:
+			# time from 10 to 90% peak:
+			t_10to90 = time_to_percent_peak(t, v_s, 0.90) - time_to_percent_peak(t, v_s, 0.10)
+			# time from 0.1 to 80% peak:
+			t_0to80 = time_to_percent_peak(t, v_s, 0.80) - time_to_percent_peak(t, v_s, 0.0001)
 
 			curr_trace.update(t_sim = t, v_sim = v_s, v_sim_peak = max(v_s)+55, 
-							  v_exp_peak = all_conns.epsp_exp[i])
+							  v_exp_peak = all_conns.epsp_exp[i], 
+							  rise_time_10to90 = t_10to90, rise_time_0to80 = t_0to80)
 		else:
 			all_conns.loc[i, 'epsp_sim'] = 0 # EPSP size = 0 if no synapses
 			all_conns.loc[i, 'num_syn'] = 0	
 
 			curr_trace.update(t_sim = [0, 20], v_sim = [-55, -55], v_sim_peak = 0, 
-							  v_exp_peak = all_conns.epsp_exp[i])
+							  v_exp_peak = all_conns.epsp_exp[i],
+							  rise_time_10to90 = 0, rise_time_0to80 = 0)
 
 		sim_traces.append(curr_trace)
 
@@ -266,8 +298,19 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 
 		curr_lhn = conn[0]
 		curr_pn = conn[1]
 		conn_peaks = [sim_traces[i]["v_sim_peak"] for i in conn_indices[conn]]
+		conn_t_10to90 = [sim_traces[i]["rise_time_10to90"] for i in conn_indices[conn]]
+		conn_t_0to80 = [sim_traces[i]["rise_time_0to80"] for i in conn_indices[conn]]
+
+		# also pull out experimental 10 to 90 rise time
+		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(curr_lhn, curr_pn), header = None, dtype = np.float64)
+		t_exp = trace_exp[0]+1.25 # slightly adjust to align with rise time of EPSP
+		v_exp = trace_exp[1]
+		t_10to90_exp = time_to_percent_peak(t_exp, v_exp, 0.90) - time_to_percent_peak(t_exp, v_exp, 0.10)
+
 		toAppend.update(lhn = curr_lhn, pn = curr_pn, epsp_sim = np.mean(conn_peaks),
-						epsp_exp = sim_traces[conn_indices[conn][0]]["v_exp_peak"])
+						epsp_exp = sim_traces[conn_indices[conn][0]]["v_exp_peak"], 
+						t_sim_10to90 = np.mean(conn_t_10to90), t_sim_0to80 = np.mean(conn_t_0to80),
+						t_exp_10to90 = t_10to90_exp)
 		sim_avgs.append(toAppend)
 
 	sim_avgs = pd.DataFrame(sim_avgs)
@@ -290,16 +333,53 @@ def find_peak_vals(epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 
 		all_conns.to_excel('{}_mcsim_params{}_each_inst.xlsx'.format(date.today().strftime("%y-%m-%d"), str(params)))
 		sim_avgs.to_excel('{}_mcsim_params{}_avgs.xlsx'.format(date.today().strftime("%y-%m-%d"), str(params)))
 	if show_scatter:
-		plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
-		plt.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], color = 'red')
-		plt.xlabel("experimental EPSP peak (mV)")
-		plt.ylabel("simulated EPSP peak (mV)")
-		plt.plot([0, 7], [0, 7])
+		plt.rcParams["figure.figsize"] = (15,15)
+
+		fig, ax = plt.subplots(nrows = 1, ncols = 1)
+
+		#plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
+		ax.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], 
+					s = 2, color = 'black')
+		ax.set_xlabel("experimental EPSP peak (mV)")
+		ax.set_ylabel("simulated EPSP peak (mV)")
+		ax.plot([0, 7], [0, 7], color = 'grey', ls = '--')
+		props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(synstrength*1000, 4)) + 
+			" nS, c_m = " + str(cm) + " uF/cm^2, R_a = " + str(ra) + 
+			" Ohm-cm")
+		plt.suptitle(props + " [current params]", 
+				 fontsize = 24, y = 0.96)
+
+		draw()
+
+		fig.savefig('{}_mcsim_params{}_scatter.svg'.format(date.today().strftime("%y-%m-%d"), str(params)))
+
 		plt.show()
 
-	return sim_traces, sim_avgs
+	### fig_mcmodel_kinetics_predictions
+	### scatter of rise time predictions vs actual
+	if show_kinetics_scatter:
+		plt.rcParams['figure.figsize'] = (2, 2)
+
+		fig, ax = plt.subplots(nrows=1, ncols=1)
+
+		ax.scatter(sim_avgs["t_exp_10to90"], sim_avgs["t_sim_10to90"], color = 'blue')
+
+		ax.plot([0, 11], [0, 11], color = 'grey', alpha = 0.3) # unity line
+
+		ax.spines["top"].set_visible(False)
+		ax.spines["right"].set_visible(False)
+		ax.set_xlabel('experimental rise time (ms)', fontsize = 9)
+		ax.set_ylabel('simulated rise time (ms)', fontsize = 9)
+
+		draw()
+		fig.savefig("fig_mcmodel_kinetics_predictions.svg")
+		plt.show()
+
+	return sim_traces, sim_avgs, sum_peak_err
 
 def plot_traces(sim_traces, cm, synstrength, ra, gpas):
+
+	plt.rcParams["figure.figsize"] = (8,7)
 
 	# 14 LHN by 17 PN plot
 	fig, axs = plt.subplots(nrows = 14, ncols = 17, sharex = True, sharey = True)
@@ -312,6 +392,14 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 	[axs[i, 0].set_ylabel(lhn_list[i]) for i in range(len(lhn_list))]
 	[ax.set_frame_on(False) for subrow in axs for ax in subrow]
 
+	# rewrite to display simulation averages (not individual traces), then save as svg with param class
+	for lhn in lhn_list:
+		for pn in pn_list:
+			trace_locs = [i for i in range(len(sim_traces)) if sim_traces[i]["lhn"]==lhn and sim_traces[i]["pn"]==pn]
+
+			# average the traces at trace_locs
+
+
 	for i in range(len(sim_traces)):
 
 		### plot simulated and experimental traces
@@ -323,13 +411,16 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 		v_exp = trace_exp[1]
 		axs[row, col].plot(t_exp, v_exp, color = 'red')
 
-		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'black')
+		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'grey', alpha = 0.2)
 
 	props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(synstrength*1000, 4)) + 
 			" nS, c_m = " + str(cm) + " uF/cm^2, R_a = " + str(ra) + 
 			" Ohm-cm")
 	plt.suptitle(props + " [current params]", 
 				 fontsize = 24, y = 0.96)
+
+	draw()
+	fig.savefig('fig_pop_mc_traces.svg')
 
 	plt.show()
 
@@ -358,34 +449,21 @@ def find_error(t1, v1, t2, v2):
 
 def param_search():
 
-	all_conns = pd.read_csv("20-08-27_all_conns.csv")
+	all_conns = pd.read_csv(conn_file)
+
+	start_time = date.today().strftime('%y-%m-%d-%H:%M:%S')
 
 	e_pas = -55 # mV
 
-	# next try not normalizing the error? 
-
-	# 20-09-13_broader search range: 
-	# 4 x 4 x 12 x 7 = 1344 + 144 from previous search!
-	syn_strength_s = [3.0e-5, 4.0e-5, 5.0e-5, 5.5e-5]
+	# 20-09-27 after refreshing body IDs after Pasha's final revisions, saving all_resids
+	# 8 * 4 * 13 * 7 = 2912
+	syn_strength_s = [2.5e-5, 3.0e-5, 3.5e-5, 4.0e-5, 4.5e-5, 5.0e-5, 5.5e-5, 6.0e-5]
 	c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
-	R_a_s = np.arange(50, 351, 50) # ohm-cm
-
-	# 20-09-12_after changing error term to peak residual sum of squares PER connection: 
-	# 2 x 3 x 6 x 4 = 144
-	#syn_strength_s = np.arange(0.000035, 0.000046, 0.00001) # uS
-	#c_m_s = np.arange(0.6, 1.21, 0.3) # uF/cm^2
-	#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.8e-5) # S/cm^2, round to 6 places
-	#R_a_s = np.arange(50, 351, 100) # ohm-cm
-
-	# 20-09-10_refit after local5 reverted to v1.1
-	# 1440
-	#syn_strength_s = np.arange(0.000030, 0.000056, 0.000005) # uS
-	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
-	#R_a_s = np.arange(50, 351, 75) # ohm-cm
+	g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+	R_a_s = np.arange(50, 351, 50) # ohm-cm 
 
 	sim_params = []
+	all_resids = []
 
 	# iterate through all biophysical parameter combinations
 	for syn_strength_i in syn_strength_s:
@@ -393,32 +471,230 @@ def param_search():
 			for g_pas_i in g_pas_s:
 				for R_a_i in R_a_s:
 
-					sum_peak_err = 0
+					### following errors skip local5/vl2a
+					sum_peak_err = 0 # sum of absolute values of normalized residuals
+					sum_peak_err_notnorm = 0 # sum of absolute values of non-normalized residuals
+					sum_peak_err_rss = 0 # sum of squares of normalized residuals
+				
+					### doesn't skip local5/vl2a
+					sum_peak_err_noskip = 0 # sum of absolute values of normalized residuals
+					sum_peak_err_notnorm_noskip = 0 # sum of absolute values of non-normalized residuals
 					
 					sim_traces, sim_avgs, rss_err = find_peak_vals(cm = c_m_i, ra = R_a_i, synstrength = syn_strength_i,
 														  gpas = g_pas_i, save_excel = False, show_scatter = False)
 
-					sum_peak_err = 0
 					for i in range(len(sim_avgs)):
 						normalized_resid = (sim_avgs.loc[i, 'epsp_sim'] - sim_avgs.loc[i, 'epsp_exp']) / sim_avgs.loc[i, 'epsp_exp']
-						sum_peak_err += normalized_resid**2
+						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+							sum_peak_err += np.abs(normalized_resid) # normalized residual
+
+						sum_peak_err_noskip += np.abs(normalized_resid) # normalized residual
+						sum_peak_err_notnorm_noskip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+
+						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+							sum_peak_err_notnorm += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+							sum_peak_err_rss += normalized_resid**2 # squared normalized residual
 
 					# save parameter values, (output trace indices), fit errors
 					params_toAppend = {}
 					params_toAppend.update(g_syn = syn_strength_i, g_pas = g_pas_i, R_a = R_a_i, 
 									c_m = c_m_i,
-									error_peak = sum_peak_err)
+									error_peak = sum_peak_err, error_peak_noskip = sum_peak_err_noskip,
+									error_peak_notnorm = sum_peak_err_notnorm,
+									error_peak_rss = sum_peak_err_rss, 
+									error_peak_notnorm_noskip = sum_peak_err_notnorm_noskip,
+									all_resids_index = len(all_resids))
 
+					# save overall statistics AND residuals per connection for this parameter set
 					sim_params.append(params_toAppend)
+					all_resids.append(sim_avgs) 
 
 				#print("finished running " + str(str(round(g_pas_i, 6))) + " S/cm^2")
 
 	sim_params = pd.DataFrame(sim_params)
 
-	return sim_params
+	sim_params.to_excel('{}_mcfit_{}.xlsx'.format(date.today().strftime("%y-%m-%d"), str(len(sim_params))))
+
+	end_time = date.today().strftime('%y-%m-%d-%H:%M:%S')
+	print("start time: {}, end time: {}".format(start_time, end_time))
+
+	return sim_params, all_resids
+
+def shelve_all_resids():
+	toshelve = ['all_resids']
+	shelf_name = '20-09-27_mcfit_all_resids.out'
+	shelf = shelve.open(shelf_name, 'n')
+	for key in dir():
+		try: 
+			if key in toshelve: 
+				shelf[key] = globals()[key]
+		except TypeError:
+			#
+        	# __builtins__, my_shelf, and imported modules can not be shelved.
+        	#
+			print('ERROR shelving: {0}'.format(key))
+	shelf.close()
+
+def transf_imped_of_inputs():
+	'''
+		after initiating a downstream cell and synapses onto the cell, 
+		calculate the mean transfer impedance between the synaptic locations
+		and a given section number of the cell 
+	'''
+
+def instantiate_lhns():
+	'''
+		code I copy pasted into the command line to manually
+		look at the transfer impedance / other electrotonic measures
+		in the GUI for two example LHNs
+	'''
+
+	# change to path for hemibrain DM1 
+	swc_path = "swc\\ML9-542634516.swc"
+	# swc_path = "swc\\L12-391609333.swc"
+
+	# biophysical parameters from our fits
+	R_a = 350
+	c_m = 0.6
+	g_pas = 5.8e-5
+	e_pas = -60 # one parameter left same in both, we used -55 in our fits
+	syn_strength = 5.5e-5 # uS
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+def sim_DM1(params = 'Gouwens'):
+	'''
+		Simulate a uEPSP to the DM1 neuron from the hemibrain, to compare 
+		attenuation between the hemibrain version and the Gouwens version
+		Goal: to understand how true is Gouwens' claim that:
+			"EPSPs still did not cause substantial voltage changes at the axon terminals"
+		Our results suggest that fly neurons, including PNs, are electrotonically compact
+		enough that EPSPs would cause substantial voltage changes
+
+		params: 'Gouwens' for Gouwens 2009 parameters
+				'our fit' for our population-level MC model fit parameters
+	'''
+
+	# change to path for hemibrain DM1 
+	swc_path = "swc\\DM1-542634818_hemibrain.swc"
+
+	# biophysical parameters from Gouwens or from our fits
+	if params == 'Gouwens':
+		R_a = 266.1
+		c_m = 0.79
+		g_pas = 4.8e-5
+		e_pas = -60
+		syn_strength = 0.00027 # uS, peak synaptic conductance, g_syn
+	elif params == 'our fit':
+		R_a = 350
+		c_m = 0.6
+		g_pas = 5.8e-5
+		e_pas = -60 # one parameter left same in both, we used -55 in our fits
+		syn_strength = 5.5e-5 # uS
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+	# from using Point Group GUI to find sections in dendrite, randomly chosen to mimic fig 6D
+	syn_secs = [2894, 2479, 6150, 2716, 6037, 5259, 3611, 5178, 5100, 5036, 4947, 4436, 2637,
+				2447, 3838, 2873, 4780, 6468, 3297, 2435, 4073, 2438, 6119, 4476, 2768]
+
+	syns = h.List()
+	for i in range(len(syn_secs)):
+		syns.append(h.Exp2Syn(cell1.axon[syn_secs[i]](0.5)))
+		### synapse parameters from Tobin et al paper: 
+		syns.object(i).tau1 = 0.2 #ms
+		syns.object(i).tau2 = 1.1 #ms
+		syns.object(i).e = -10 #mV, synaptic reversal potential = -10 mV for acetylcholine? 
+
+	### use NetStim to activate NetCon
+	nc = h.NetStim()
+	nc.number = 1
+	nc.start = 0
+	nc.noise = 0
+
+	ncs = h.List()
+	for i in range(len(list(syns))):
+		ncs.append(h.NetCon(nc, syns.object(i)))
+		ncs.object(i).weight[0] = syn_strength # uS, peak conductance change
+
+	### measure the depolarization at the synapse locations, and at a few points in the distal axon
+	### compare the attenuation for both Gouwens and the hemibrain DM1
+
+	h.load_file('stdrun.hoc')
+	x = h.cvode.active(True)
+
+	# establish recordings at all input synapse locations
+	v_input = []
+	for i in range(len(list(syns))):
+		record_loc = syns.object(i).get_segment()
+		v_input.append(h.Vector().record(record_loc._ref_v))
+
+	# establish recordings at a few axon locations, in both MB and LH
+	v_record = []
+	axon_secs = [2094, 1925, 1878, 1740, 647, 896, 1339, 1217]
+	for i in range(len(axon_secs)):
+		v_record.append(h.Vector().record(cell1.axon[axon_secs[i]](0.5)._ref_v))
+
+	v_soma = h.Vector().record(cell1.soma[0](0.75)._ref_v) 		# soma membrane potential
+	t = h.Vector().record(h._ref_t)                     # Time stamp vector
+
+	h.finitialize(-60 * mV)
+	h.continuerun(60*ms)
+
+	# plot
+
+	plt.rcParams["figure.figsize"] = (15,15)
+	plt.plot(list(t), list(v_soma), color = 'red', label = 'soma recording')
+	for trace in v_input:
+		if v_input.index(trace) == 0:
+			plt.plot(list(t), list(trace), color = 'blue', label = 'synapse site recording')
+		else:
+			plt.plot(list(t), list(trace), color = 'blue')
+	for trace in v_record:
+		if v_record.index(trace) == 0:
+			plt.plot(list(t), list(trace), color = 'green', label = 'axon site recording')
+		else:
+			plt.plot(list(t), list(trace), color = 'green')
+	plt.xlabel('time (ms)')
+	plt.ylim([-60, -40])
+	plt.ylabel('membrane potential (mV)')
+	plt.legend(loc = 'upper right')
+	plt.title('Hemibrain DM1 uEPSP, parameters from {}'.format(params))
+	plt.show()
+
+	# print area
+	print("DM1 area: {} um^2".format(str(cell1.surf_area())))
 
 '''
 Past parameter fits: 
+
+# 20-09-13_broader search range: 
+# 4 x 4 x 12 x 7 = 1344 + 144 from previous search!
+#syn_strength_s = [3.0e-5, 4.0e-5, 5.0e-5, 5.5e-5]
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(50, 351, 50) # ohm-cm
+
+# 20-09-12_after changing error term to peak residual sum of squares PER connection: 
+# 2 x 3 x 6 x 4 = 144
+#syn_strength_s = np.arange(0.000035, 0.000046, 0.00001) # uS
+#c_m_s = np.arange(0.6, 1.21, 0.3) # uF/cm^2
+#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.8e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(50, 351, 100) # ohm-cm
+
+# 20-09-10_refit after local5 reverted to v1.1
+# 1440
+#syn_strength_s = np.arange(0.000030, 0.000056, 0.000005) # uS
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#g_pas_s = np.arange(1.0e-5, 5.8e-5, 0.4e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(50, 351, 75) # ohm-cm
 
 # 20-09-04_change syn conductance: 1:28am to 
 #syn_strength_s = np.arange(0.0000325, 0.00005, 0.000005) # uS
