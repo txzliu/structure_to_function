@@ -536,12 +536,49 @@ def shelve_all_resids():
 			print('ERROR shelving: {0}'.format(key))
 	shelf.close()
 
-def transf_imped_of_inputs():
+def transf_imped_of_inputs(down, down_id, up, up_id, siz_sec, siz_seg, transf_freq = 20):
 	'''
 		after initiating a downstream cell and synapses onto the cell, 
 		calculate the mean transfer impedance between the synaptic locations
 		and a given section number of the cell 
+
+		from docs for Impedance.transfer()
+			The value returned can be thought of as either |v(loc)/i(x)| or |v(x)/i(loc)| 
+			Probably the more useful way of thinking about it is to assume a current stimulus of 1nA 
+			injected at x and the voltage in mV recorded at loc
 	'''
+	swc_path = "swc\\{}-{}.swc".format(down, down_id)
+	syn_path = "syn_locs\\{}-{}_{}-{}.csv".format(down, down_id, up, up_id)
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+	synapses, netstim, netcons, num = cell1.add_synapses(syn_path, syn_strength)
+
+	# set up Impedance measurement class
+	imp = h.Impedance()
+	imp.loc(siz_seg, sec = cell1.axon[siz_sec])
+	imp.compute(transf_freq)	# starts computing transfer impedance @ freq 
+
+	syn_info = []
+	# iterate through synapses
+	for syn in synapses:
+		# find Z_c from synapse to siz_loc AND distance between the points, append to list
+		curr_loc = syn.get_segment()
+		curr_transf_imp = imp.transfer(curr_loc)
+		curr_distance = h.distance(cell1.axon[siz_sec](siz_seg), curr_loc)
+
+		syn_info.append([curr_distance, curr_transf_imp])
+
+
+	# plot synapse to SIZ distance vs transfer impedance
+	plt.scatter([syn[0] for syn in syn_info], [syn[1] for syn in syn_info])
+	plt.show()
+
+d, d_id, u, u_id, s_sec, s_seg = 'local5', '5813105722', 'VA6', '1881751117', 996, 0
+transf_imped_of_inputs(down = d, down_id = d_id, up = u, up_id = u_id, 
+						siz_sec = s_sec, siz_seg = s_seg, transf_freq = 20)
 
 def instantiate_lhns():
 	'''
@@ -565,6 +602,10 @@ def instantiate_lhns():
 	cell1.discretize_sections()
 	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
 	cell1.tree = cell1.trace_tree()
+
+	syn_path = "syn_locs\\ML9-542634516_DM1-542634818.csv"
+
+	synapses, netstim, netcons, num = cell1.add_synapses(syn_path, syn_strength)
 
 def sim_DM1(params = 'Gouwens'):
 	'''
