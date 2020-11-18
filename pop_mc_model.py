@@ -11,6 +11,12 @@ sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\c
 from run_local5 import *
 from datetime import date
 
+# set up API connection to neuprint hemibrain server
+from neuprint import Client
+from neuprint import fetch_simple_connections, fetch_synapse_connections
+from neuprint import SynapseCriteria as SC
+c = Client('neuprint.janelia.org', dataset = 'hemibrain:v1.1',token='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImxpdXRvbnk2NkBnbWFpbC5jb20iLCJsZXZlbCI6Im5vYXV0aCIsImltYWdlLXVybCI6Imh0dHBzOi8vbGgzLmdvb2dsZXVzZXJjb250ZW50LmNvbS9hLS9BT2gxNEdoNWZBS29QYzQxdzR0S0V1cmFXeEplbm41ZHBoajFrU2tBVS1mVD9zej01MD9zej01MCIsImV4cCI6MTc2NTAwNTUwOH0.itiAhvsvMYHVECWFVMuolEJo64pwSQgt9OLN2npyrys')
+
 h.load_file('import3d.hoc')
 
 class Cell():
@@ -23,6 +29,7 @@ class Cell():
 		#self.discretize_sections()
 		#self.add_biophysics()
 		self.tree = pd.DataFrame()
+		self.body_id = 0
 
 	def __str__(self):
 		return 'Cell[{}]'.format(self._gid)
@@ -143,6 +150,58 @@ class Cell():
 
 		return syns, nc, ncs, num_synapses
 
+	def add_synapses_xyz(self, xyz_locs, syn_strength):
+		'''
+			add new synapses based on loaded xyz locations
+		'''
+		num_synapses = xyz_locs.shape[0]
+		#print("imported " + str(num_synapses) + " synapses")
+		if num_synapses == 0:
+			return 0, 0, 0, 0
+
+		### KNN to map each synapse x, y, z (scaled x0.008) to the closest segment
+		tree_coords = self.tree.loc[:, 'x':'z']
+		syn_coords = xyz_locs.loc[:, 'x_post':'z_post'] / 125
+		nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(tree_coords)
+		distances, indices = nbrs.kneighbors(syn_coords) 
+		# indices: index in tree of closest section and point location to a synapse
+
+		### add synapses onto morphology
+		syns = h.List()
+		j = 0 # index in syns
+		for index in indices:
+			sec = int(self.tree.loc[index, 'sec'])
+			i3d = self.tree.loc[index, 'i3d']	# the 3d point index on the section
+			#print("adding synapse " + str(j) + " to section " + str(sec))
+			loc = eval("self.{}[sec].arc3d(i3d) / self.{}[sec].L".format(self.sec_name, self.sec_name))
+			# 0 to 1, length along section
+			#print("about to append")
+			syns.append(h.Exp2Syn(self.axon[sec](loc)))
+
+			### synapse parameters from Tobin et al paper: 
+			syns.object(j).tau1 = 0.2 #ms
+			syns.object(j).tau2 = 1.1 #ms
+			syns.object(j).e = -10 #mV, synaptic reversal potential = -10 mV for acetylcholine? 
+			# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3125135/
+			#syns.object(j).g = 0.0001 #uS default ### seems to have no effect on the result
+
+			h.pop_section() # clear the section stack to avoid overflow (triggered by using ".L" above?)
+			j = j + 1
+
+		### use NetStim to activate NetCon
+		nc = h.NetStim()
+		nc.number = 1
+		nc.start = 0
+		nc.noise = 0
+
+		ncs = h.List()
+		for i in range(len(list(syns))):
+			ncs.append(h.NetCon(nc, syns.object(i)))
+			ncs.object(i).weight[0] = syn_strength # uS, peak conductance change
+
+		return syns, nc, ncs, num_synapses
+
+
 	def total_length(self):
 		total_length = 0
 		for sec in self.axon: 
@@ -164,6 +223,8 @@ def time_to_percent_peak(t, v, perc):
 	base, peak = min(v), max(v)
 	peak_loc = np.where(np.array(v) == peak)[0][0] # index of peak location
 	perc_of_peak = perc * (peak - base) + base # value of percent of peak amplitude
+	if peak_loc == 0: # safety catch for if v trace is all 0, maybe replace with np.nan, then use nansum 
+		return 0
 	# interpolate t value where v reaches inputted percent of peak amplitude
 	time_of_perc = np.interp(perc_of_peak, np.array(v)[0:peak_loc], np.array(t)[0:peak_loc])
 	# subsets portion of trace up to the peak
@@ -270,6 +331,9 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 			# time from 0.1 to 80% peak:
 			t_0to80 = time_to_percent_peak(t, v_s, 0.80) - time_to_percent_peak(t, v_s, 0.0001)
 
+			# TODO: track average transfer impedance to SIZ and average geodesic distance to SIZ
+			# perhaps also the stdevs of above
+
 			curr_trace.update(t_sim = t, v_sim = v_s, v_sim_peak = max(v_s)+55, 
 							  v_exp_peak = all_conns.epsp_exp[i], 
 							  rise_time_10to90 = t_10to90, rise_time_0to80 = t_0to80)
@@ -284,6 +348,53 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 		sim_traces.append(curr_trace)
 
 	### average together traces: find instances of each connection, then average each set of instances
+	sim_avgs_v2 = []
+	lhn_list = ['CML2', 'L1', 'L11', 'L12', 'L13', 'L15', 'ML3', 'ML8', 'ML9', 'V2', 'V3', 'local2', 'local5', 'local6']
+	pn_list = ['DA4l', 'DC1', 'DL4', 'DL5', 'DM1', 'DM3', 'DM4', 'DP1m', 'VA1v', 'VA2', 'VA4', 'VA6', 
+				'VA7l', 'VC1', 'VC2', 'VL2a', 'VL2p']
+	# display simulation averages per connection type (not individual traces)
+	# then save as svg with param class
+	for lhn in lhn_list:
+		for pn in pn_list:
+			trace_locs = [i for i in range(len(sim_traces)) if sim_traces[i]["lhn"]==lhn and sim_traces[i]["pn"]==pn]
+
+			# average the traces at trace_locs if the LHN-PN pair exists
+			if len(trace_locs) > 0:
+				t_interp = np.arange(0, 21, 0.05)
+
+				avg_sim = np.zeros(len(t_interp))
+				for ind in trace_locs:
+					interp_trace = np.interp(t_interp, sim_traces[ind]["t_sim"], [x+55 for x in sim_traces[ind]["v_sim"]])
+
+					avg_sim = [sum(pair) for pair in zip(avg_sim, interp_trace)]
+
+				avg_sim = [val/len(trace_locs) for val in avg_sim]
+
+				#print('t_interp, avg_sim:')
+				#print(t_interp)
+				#print(avg_sim)
+
+				# calculate kinetics for avg sim trace
+				t_10to90_sim = time_to_percent_peak(t_interp, avg_sim, 0.90) - time_to_percent_peak(t_interp, avg_sim, 0.10)
+				t_0to80_sim = time_to_percent_peak(t_interp, avg_sim, 0.80) - time_to_percent_peak(t_interp, avg_sim, 0.0001)
+
+				# calculate kinetics for exp trace
+				trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(lhn, pn), header = None, dtype = np.float64)
+				t_exp = trace_exp[0]+1.25 # slightly adjust to align with rise time of EPSP
+				v_exp = trace_exp[1]
+				t_10to90_exp = time_to_percent_peak(t_exp, v_exp, 0.90) - time_to_percent_peak(t_exp, v_exp, 0.10)
+
+				# add LHN, PN, and info about the simulated trace to data table:
+				toAppend = {}
+				toAppend.update(lhn = lhn, pn = pn, epsp_sim = max(avg_sim),
+								epsp_exp = sim_traces[trace_locs[0]]['v_exp_peak'],
+								t_sim_10to90 = t_10to90_sim, t_sim_0to80 = t_0to80_sim,
+								t_exp_10to90 = t_10to90_exp)
+				sim_avgs_v2.append(toAppend)
+	sim_avgs_v2 = pd.DataFrame(sim_avgs_v2)
+
+	### old method:
+	### average together traces: find instances of each connection, then average each set of instances
 	conn_indices = {} # keys are tuples of LHN, PN names; values are indices of the connections
 	for i in range(len(sim_traces)):
 		curr_conn = (sim_traces[i]["lhn"], sim_traces[i]["pn"])
@@ -291,7 +402,6 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 			conn_indices[curr_conn] = [i]
 		else:
 			conn_indices[curr_conn].append(i)
-
 	sim_avgs = []
 	for conn in conn_indices:
 		toAppend = {}
@@ -312,7 +422,6 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 						t_sim_10to90 = np.mean(conn_t_10to90), t_sim_0to80 = np.mean(conn_t_0to80),
 						t_exp_10to90 = t_10to90_exp)
 		sim_avgs.append(toAppend)
-
 	sim_avgs = pd.DataFrame(sim_avgs)
 
 	# compute normalized RSS error
@@ -335,51 +444,69 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 	if show_scatter:
 		plt.rcParams["figure.figsize"] = (15,15)
 
-		fig, ax = plt.subplots(nrows = 1, ncols = 1)
+		fig, ax = plt.subplots(nrows = 1, ncols = 2)
 
 		#plt.scatter(all_conns.loc[:, 'epsp_exp'], all_conns.loc[:, 'epsp_sim'], color = 'black')
-		ax.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], 
+		ax[0].scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], 
 					s = 2, color = 'black')
-		ax.set_xlabel("experimental EPSP peak (mV)")
-		ax.set_ylabel("simulated EPSP peak (mV)")
-		ax.plot([0, 7], [0, 7], color = 'grey', ls = '--')
+		ax[0].set_xlabel("experimental EPSP peak (mV)")
+		ax[0].set_ylabel("simulated EPSP peak (mV)")
+		ax[0].plot([0, 7], [0, 7], color = 'grey', ls = '--')
 		props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(synstrength*1000, 4)) + 
 			" nS, c_m = " + str(cm) + " uF/cm^2, R_a = " + str(ra) + 
 			" Ohm-cm")
-		plt.suptitle(props + " [current params]", 
-				 fontsize = 24, y = 0.96)
+		#plt.suptitle(props + " [current params]", 
+		#		 fontsize = 24, y = 0.96)
 
+		# test out new averaging method for kinetics
+		ax[1].scatter(sim_avgs_v2.loc[:, 'epsp_exp'], sim_avgs_v2.loc[:, 'epsp_sim'], 
+					s = 2, color = 'black')
+		ax[1].set_xlabel("experimental EPSP peak (mV)")
+		ax[1].set_ylabel("simulated EPSP peak (mV)")
+		ax[1].plot([0, 7], [0, 7], color = 'grey', ls = '--')
+
+		'''
 		draw()
 
 		fig.savefig('{}_mcsim_params{}_scatter.svg'.format(date.today().strftime("%y-%m-%d"), str(params)))
-
+		'''
 		plt.show()
-
 	### fig_mcmodel_kinetics_predictions
 	### scatter of rise time predictions vs actual
 	if show_kinetics_scatter:
 		plt.rcParams['figure.figsize'] = (2, 2)
 
-		fig, ax = plt.subplots(nrows=1, ncols=1)
+		fig, ax = plt.subplots(nrows=1, ncols=2)
 
-		ax.scatter(sim_avgs["t_exp_10to90"], sim_avgs["t_sim_10to90"], color = 'blue')
+		ax[0].scatter(sim_avgs["t_exp_10to90"], sim_avgs["t_sim_10to90"], color = 'blue', s = 2) # size = 2
+		ax[0].plot([0, 11], [0, 11], color = 'grey', alpha = 0.3) # unity line
+		ax[0].spines["top"].set_visible(False)
+		ax[0].spines["right"].set_visible(False)
+		ax[0].set_xlabel('experimental rise time (ms)', fontsize = 9)
+		ax[0].set_ylabel('simulated rise time (ms)', fontsize = 9)
 
-		ax.plot([0, 11], [0, 11], color = 'grey', alpha = 0.3) # unity line
-
-		ax.spines["top"].set_visible(False)
-		ax.spines["right"].set_visible(False)
-		ax.set_xlabel('experimental rise time (ms)', fontsize = 9)
-		ax.set_ylabel('simulated rise time (ms)', fontsize = 9)
-
+		# test out new averaging method for kinetics
+		ax[1].scatter(sim_avgs_v2["t_exp_10to90"], sim_avgs_v2["t_sim_10to90"], color = 'blue', s = 2)
+		ax[1].plot([0, 11], [0, 11], color = 'grey', alpha = 0.3) # unity line
+		ax[1].spines["top"].set_visible(False)
+		ax[1].spines["right"].set_visible(False)
+		ax[1].set_xlabel('experimental rise time (ms)', fontsize = 9)
+		ax[1].set_ylabel('simulated rise time (ms)', fontsize = 9)
+		'''
 		draw()
 		fig.savefig("fig_mcmodel_kinetics_predictions.svg")
+		'''
 		plt.show()
 
-	return sim_traces, sim_avgs, sum_peak_err
+	return sim_traces, sim_avgs, sim_avgs_v2, sum_peak_err
 
 def plot_traces(sim_traces, cm, synstrength, ra, gpas):
+	'''
+		given inputs (to be described), overlay simulated and experimental traces
+		in cells of a large grid
+	'''
 
-	plt.rcParams["figure.figsize"] = (8,7)
+	plt.rcParams["figure.figsize"] = (9,7)
 
 	# 14 LHN by 17 PN plot
 	fig, axs = plt.subplots(nrows = 14, ncols = 17, sharex = True, sharey = True)
@@ -392,12 +519,29 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 	[axs[i, 0].set_ylabel(lhn_list[i]) for i in range(len(lhn_list))]
 	[ax.set_frame_on(False) for subrow in axs for ax in subrow]
 
-	# rewrite to display simulation averages (not individual traces), then save as svg with param class
+	# display simulation averages per connection type (not individual traces)
+	# then save as svg with param class
 	for lhn in lhn_list:
 		for pn in pn_list:
 			trace_locs = [i for i in range(len(sim_traces)) if sim_traces[i]["lhn"]==lhn and sim_traces[i]["pn"]==pn]
 
 			# average the traces at trace_locs
+			if len(trace_locs) > 0:
+				t_interp = np.arange(0, 21, 0.5)
+
+				avg_trace = np.zeros(len(t_interp))
+				for ind in trace_locs:
+					interp_trace = np.interp(t_interp, sim_traces[ind]["t_sim"], [x+55 for x in sim_traces[ind]["v_sim"]])
+
+					avg_trace = [sum(pair) for pair in zip(avg_trace, interp_trace)]
+
+				avg_trace = [val/len(trace_locs) for val in avg_trace]
+
+				### plot simulated and experimental traces
+				row = lhn_list.index(lhn)
+				col = pn_list.index(pn)
+
+				axs[row, col].plot(t_interp, avg_trace, color = 'green', lw = 0.8)
 
 
 	for i in range(len(sim_traces)):
@@ -409,15 +553,15 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(sim_traces[i]["lhn"], sim_traces[i]["pn"]), header = None, dtype = np.float64)
 		t_exp = trace_exp[0]+1.25 # slightly adjust to align with rise time of EPSP
 		v_exp = trace_exp[1]
-		axs[row, col].plot(t_exp, v_exp, color = 'red')
+		axs[row, col].plot(t_exp, v_exp, color = 'red', lw = 0.8)
 
-		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'grey', alpha = 0.2)
+		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'grey', alpha = 0.2, lw = 0.4)
 
 	props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(synstrength*1000, 4)) + 
 			" nS, c_m = " + str(cm) + " uF/cm^2, R_a = " + str(ra) + 
 			" Ohm-cm")
 	plt.suptitle(props + " [current params]", 
-				 fontsize = 24, y = 0.96)
+				 fontsize = 15, y = 0.96)
 
 	draw()
 	fig.savefig('fig_pop_mc_traces.svg')
@@ -536,7 +680,7 @@ def shelve_all_resids():
 			print('ERROR shelving: {0}'.format(key))
 	shelf.close()
 
-def transf_imped_of_inputs(down, down_id, up, up_id, siz_sec, siz_seg, transf_freq = 20):
+def transf_imped_of_inputs(down, down_id, up, up_id, siz_sec, siz_seg, transf_freq = 20, toPlot = False):
 	'''
 		after initiating a downstream cell and synapses onto the cell, 
 		calculate the mean transfer impedance between the synaptic locations
@@ -569,16 +713,23 @@ def transf_imped_of_inputs(down, down_id, up, up_id, siz_sec, siz_seg, transf_fr
 		curr_transf_imp = imp.transfer(curr_loc)
 		curr_distance = h.distance(cell1.axon[siz_sec](siz_seg), curr_loc)
 
-		syn_info.append([curr_distance, curr_transf_imp])
-
+		# convert to dictionary input with interpretable outputs
+		toAppend = {}
+		toAppend.update(dist_to_siz = curr_distance, Zc_to_siz = curr_transf_imp)
+		syn_info.append(toAppend)
 
 	# plot synapse to SIZ distance vs transfer impedance
-	plt.scatter([syn[0] for syn in syn_info], [syn[1] for syn in syn_info])
-	plt.show()
+	if toPlot:
+		plt.scatter([val[dist_to_siz] for val in syn_info], [val[Zc_to_siz] for val in syn_info])
+		plt.xlabel('synapse to SIZ (um)')
+		plt.ylabel('transfer impedance (MOhm)')
+		plt.show()
 
+	return syn_info
+# example code for above method:
 d, d_id, u, u_id, s_sec, s_seg = 'local5', '5813105722', 'VA6', '1881751117', 996, 0
-transf_imped_of_inputs(down = d, down_id = d_id, up = u, up_id = u_id, 
-						siz_sec = s_sec, siz_seg = s_seg, transf_freq = 20)
+#transf_imped_of_inputs(down = d, down_id = d_id, up = u, up_id = u_id, 
+#						siz_sec = s_sec, siz_seg = s_seg, transf_freq = 20)
 
 def instantiate_lhns():
 	'''
@@ -606,6 +757,93 @@ def instantiate_lhns():
 	syn_path = "syn_locs\\ML9-542634516_DM1-542634818.csv"
 
 	synapses, netstim, netcons, num = cell1.add_synapses(syn_path, syn_strength)
+
+def inst_LHN_w_syns(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 10, 
+								siz_sec = 569, siz_seg = 0.01, transf_freq = 20, combine_inputs = True,
+								axon_sec = 500, axon_seg = 0.5):
+	'''
+		instantiate Cell and use hemibrain to add all synapses above a threshold weight
+	'''
+	swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+
+	# straight from neuprint:
+	#skel = fetch_skeleton(body = target_body_id, format = 'swc') # import skeleton
+
+	# biophysical parameters from our fits
+	R_a = 350
+	c_m = 0.6
+	g_pas = 5.8e-5
+	e_pas = -60 # one parameter left same in both, we used -55 in our fits
+	syn_strength = 5.5e-5 # uS
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+	conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
+	all_synapses = []
+	for i in range(len(conns.bodyId_pre)):
+		pre_name = conns.type_pre[i]
+
+		if combine_inputs:
+			if pre_name in [val['pre_name'] for val in all_synapses]:
+				print('adding synapses from {} to existing synapses'.format(pre_name))
+				syn_locs = fetch_synapse_connections(source_criteria = conns.bodyId_pre[i], target_criteria = target_body_id)
+				syn_locs = syn_locs[['x_post', 'y_post', 'z_post']]
+
+				curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
+
+				# find the index of the existing location
+				# extend existing syns by curr_syns, add to syn_count
+
+				toAppend = {}
+				toAppend.update(pre_name = pre_name, syns = curr_syns, syn_count = len(curr_syns))
+				all_synapses.append(toAppend)
+
+
+		print('adding synapses from {}'.format(pre_name))
+		syn_locs = fetch_synapse_connections(source_criteria = conns.bodyId_pre[i], target_criteria = target_body_id)
+		syn_locs = syn_locs[['x_post', 'y_post', 'z_post']]
+
+		curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
+
+		toAppend = {}
+		toAppend.update(pre_name = pre_name, syns = curr_syns, syn_count = len(curr_syns))
+		all_synapses.append(toAppend)
+
+	# set up Impedance measurement class
+	imp = h.Impedance()
+	imp.loc(siz_seg, sec = cell1.axon[siz_sec])
+	imp.compute(transf_freq)	# starts computing transfer impedance @ freq 
+
+	# iterate through synapses
+	for pair in all_synapses:
+		curr_syns = pair['syns']
+		syn_info = []
+		for syn in curr_syns:
+			# find Z_c from synapse to siz_loc AND distance between the points, append to list
+			curr_loc = syn.get_segment()
+			curr_transf_imp = imp.transfer(curr_loc)
+			curr_distance = h.distance(cell1.axon[siz_sec](siz_seg), curr_loc)
+
+			# convert to dictionary input with interpretable outputs
+			toAppend = {}
+			toAppend.update(dist_to_siz = curr_distance, Zc_to_siz = curr_transf_imp)
+			syn_info.append(toAppend)
+
+		plt.scatter([val['dist_to_siz'] for val in syn_info], [val['Zc_to_siz'] for val in syn_info], 
+						label = "{} w/ {} synapses".format(pair['pre_name'], str(pair['syn_count'])),
+						alpha = 0.2)
+
+	# plot synapse to SIZ distance vs transfer impedance
+	plt.legend(loc = 'upper right')
+	plt.xlabel('distance, synapse to SIZ (um)')
+	plt.ylabel('transfer impedance, synapse to SIZ (MOhm)')
+	plt.title('inputs onto {} {}'.format(target_name, str(target_body_id)))
+	plt.show()
+
+	return all_synapses
 
 def sim_DM1(params = 'Gouwens'):
 	'''
