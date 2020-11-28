@@ -79,6 +79,9 @@ def num_syn_scaling():
 	plt.plot(np.arange(200), peak_vals)
 	plt.show()
 
+# 20-09-29 best fits: 
+# SCv1: 0.00006	0.6	0.0185
+# SCv2: 0.000064 0.6 0.0225
 def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175, 
 					show_plot = False, show_scatter = False, save_excel = False):
 
@@ -157,7 +160,7 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 		#sum_peak_err += normalized_resid**2
 
 	if show_plot:
-		plot_traces(sim_traces, cm, gsyn, gpas)
+		plot_traces(sim_traces, cm, gsyn, gpas, version)
 	if save_excel:
 		all_conns.to_excel('{}_scsim_v{}_each_inst.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(version)))
 		sim_avgs.to_excel('{}_scsim_v{}_avgs.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(version)))
@@ -175,7 +178,7 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 			" nS, c_m = " + str(cm) + " uF/cm^2, R_a = " + str(ra) + 
 			" Ohm-cm")
 		plt.suptitle(props + " [current params]", 
-				 fontsize = 24, y = 0.96)
+				 fontsize = 15, y = 0.96)
 
 		draw()
 
@@ -185,9 +188,9 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 
 	return sim_traces, sim_avgs, sum_peak_err
 
-def plot_traces(sim_traces, cm, gsyn, gpas):
+def plot_traces(sim_traces, cm, gsyn, gpas, version):
 
-	plt.rcParams["figure.figsize"] = (40,35)
+	plt.rcParams["figure.figsize"] = (9, 7)
 
 	# 14 LHN by 17 PN plot
 	fig, axs = plt.subplots(nrows = 14, ncols = 17, sharex = True, sharey = True)
@@ -196,9 +199,39 @@ def plot_traces(sim_traces, cm, gsyn, gpas):
 	[ax.set_xlim(0,21) for subrow in axs for ax in subrow]
 	[ax.set_ylim(0,7) for subrow in axs for ax in subrow]
 	plt.subplots_adjust(wspace=0, hspace=0)
-	[axs[0, i].set_title(pn_list[i]) for i in range(len(pn_list))]
-	[axs[i, 0].set_ylabel(lhn_list[i]) for i in range(len(lhn_list))]
+	[axs[0, i].set_title(pn_list[i], fontsize = 12) for i in range(len(pn_list))]
+	[axs[i, 0].set_ylabel(lhn_list[i], fontsize = 12) for i in range(len(lhn_list))]
+	[axs[len(lhn_list)-1, i].tick_params('x', labelsize = 10) for i in range(len(pn_list))]
+	[axs[i, 0].tick_params('y', labelsize = 10) for i in range(len(lhn_list))]
 	[ax.set_frame_on(False) for subrow in axs for ax in subrow]
+
+	avg_sim_traces = pd.DataFrame({'t': np.arange(0, 21, 0.1)})
+	# display simulation averages per connection type (not individual traces)
+	# then save as svg with param class
+	for lhn in lhn_list:
+		for pn in pn_list:
+			trace_locs = [i for i in range(len(sim_traces)) if sim_traces[i]["lhn"]==lhn and sim_traces[i]["pn"]==pn]
+
+			# average the traces at trace_locs
+			if len(trace_locs) > 0:
+				t_interp = np.arange(0, 21, 0.1)
+
+				avg_trace = np.zeros(len(t_interp))
+				for ind in trace_locs:
+					interp_trace = np.interp(t_interp, sim_traces[ind]["t_sim"], [x+55 for x in sim_traces[ind]["v_sim"]])
+
+					avg_trace = [sum(pair) for pair in zip(avg_trace, interp_trace)]
+
+				avg_trace = [val/len(trace_locs) for val in avg_trace]
+
+				### plot simulated traces in proper grid location
+				row = lhn_list.index(lhn)
+				col = pn_list.index(pn)
+				axs[row, col].plot(t_interp, avg_trace, color = 'green', lw = 0.8) # plot 
+
+				# save avg s
+				avg_sim_traces['{}_{}_sim'.format(lhn, pn)] = avg_trace
+	avg_sim_traces.to_csv('figdata_avg_sim_traces_sc_v{}.csv'.format(str(version)))
 
 	for i in range(len(sim_traces)):
 
@@ -209,14 +242,14 @@ def plot_traces(sim_traces, cm, gsyn, gpas):
 		trace_exp = pd.read_csv('exp_traces\\{}_{}.csv'.format(sim_traces[i]["lhn"], sim_traces[i]["pn"]), header = None, dtype = np.float64)
 		t_exp = trace_exp[0]  # don't adjust experimental rise, since sim rises at t=0
 		v_exp = trace_exp[1]
-		axs[row, col].plot(t_exp, v_exp, color = 'red')
+		axs[row, col].plot(t_exp, v_exp, color = 'red', lw = 0.8)
 
-		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'black')
+		axs[row, col].plot(sim_traces[i]["t_sim"], [x+55 for x in sim_traces[i]["v_sim"]], color = 'grey', alpha = 0.2, lw = 0.4)
 
 	props = ("g_pas = " + str(gpas) + " S/cm^2, g_syn = " + str(round(gsyn, 4)) + 
 			" nS, c_m = " + str(cm) + " uF/cm^2")
 	plt.suptitle(props + " [current params]", 
-				 fontsize = 24, y = 0.96)
+				 fontsize = 15, y = 0.96)
 
 	plt.show()
 

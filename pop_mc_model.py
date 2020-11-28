@@ -10,6 +10,7 @@ import sys
 sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model")
 from run_local5 import *
 from datetime import date
+import seaborn as sns
 
 # set up API connection to neuprint hemibrain server
 from neuprint import Client
@@ -188,9 +189,9 @@ class Cell():
 			h.pop_section() # clear the section stack to avoid overflow (triggered by using ".L" above?)
 			j = j + 1
 
-		### use NetStim to activate NetCon
+		### use NetStim to activate NetCon, initially inactive
 		nc = h.NetStim()
-		nc.number = 1
+		nc.number = 0
 		nc.start = 0
 		nc.noise = 0
 
@@ -370,10 +371,6 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 
 				avg_sim = [val/len(trace_locs) for val in avg_sim]
 
-				#print('t_interp, avg_sim:')
-				#print(t_interp)
-				#print(avg_sim)
-
 				# calculate kinetics for avg sim trace
 				t_10to90_sim = time_to_percent_peak(t_interp, avg_sim, 0.90) - time_to_percent_peak(t_interp, avg_sim, 0.10)
 				t_0to80_sim = time_to_percent_peak(t_interp, avg_sim, 0.80) - time_to_percent_peak(t_interp, avg_sim, 0.0001)
@@ -519,6 +516,8 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 	[axs[i, 0].set_ylabel(lhn_list[i]) for i in range(len(lhn_list))]
 	[ax.set_frame_on(False) for subrow in axs for ax in subrow]
 
+
+	avg_sim_traces = pd.DataFrame({'t': np.arange(0, 21, 0.1)})
 	# display simulation averages per connection type (not individual traces)
 	# then save as svg with param class
 	for lhn in lhn_list:
@@ -527,7 +526,7 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 
 			# average the traces at trace_locs
 			if len(trace_locs) > 0:
-				t_interp = np.arange(0, 21, 0.5)
+				t_interp = np.arange(0, 21, 0.1)
 
 				avg_trace = np.zeros(len(t_interp))
 				for ind in trace_locs:
@@ -537,11 +536,14 @@ def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 
 				avg_trace = [val/len(trace_locs) for val in avg_trace]
 
-				### plot simulated and experimental traces
+				### plot simulated traces in proper grid location
 				row = lhn_list.index(lhn)
 				col = pn_list.index(pn)
+				axs[row, col].plot(t_interp, avg_trace, color = 'green', lw = 0.8) # plot 
 
-				axs[row, col].plot(t_interp, avg_trace, color = 'green', lw = 0.8)
+				# save avg s
+				avg_sim_traces['{}_{}_sim'.format(lhn, pn)] = avg_trace
+	avg_sim_traces.to_csv('figdata_avg_sim_traces_mc.csv')
 
 
 	for i in range(len(sim_traces)):
@@ -740,13 +742,16 @@ def instantiate_lhns():
 
 	# change to path for hemibrain DM1 
 	swc_path = "swc\\ML9-542634516.swc"
+	# swc_path = "swc\\KCs (pasha)\\KCa'b'-ap1-487834111.swc"
+	# swc_path = "swc\\KCs (pasha)\\KCab-s-331662717.swc"
+	# swc_path = "swc\\KCs (pasha)\\KCg-m-354775482.swc"
 	# swc_path = "swc\\L12-391609333.swc"
 
 	# biophysical parameters from our fits
 	R_a = 350
 	c_m = 0.6
 	g_pas = 5.8e-5
-	e_pas = -60 # one parameter left same in both, we used -55 in our fits
+	e_pas = -55 # one parameter left same in both, we used -55 in our fits
 	syn_strength = 5.5e-5 # uS
 
 	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
@@ -758,22 +763,29 @@ def instantiate_lhns():
 
 	synapses, netstim, netcons, num = cell1.add_synapses(syn_path, syn_strength)
 
-def inst_LHN_w_syns(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 10, 
-								siz_sec = 569, siz_seg = 0.01, transf_freq = 20, combine_inputs = True,
-								axon_sec = 500, axon_seg = 0.5):
+def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 10, 
+								siz_sec = 569, siz_seg = 0.01, transf_freq = 20, 
+								axon_sec = 609, axon_seg = 0.58,
+								toPlot = False):
 	'''
+		given the name and body ID of an existing LHN (which has a skeleton in the swc folder)
 		instantiate Cell and use hemibrain to add all synapses above a threshold weight
+		return DataFrame with EPSP and impedance attributes about each unique connection type
 	'''
-	swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	try:
+		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	except:
+		print('no SWC found')
+	### add neuprint call if the SWC doesn't exist inside
 
-	# straight from neuprint:
+	# get swc straight from neuprint:
 	#skel = fetch_skeleton(body = target_body_id, format = 'swc') # import skeleton
 
 	# biophysical parameters from our fits
 	R_a = 350
 	c_m = 0.6
 	g_pas = 5.8e-5
-	e_pas = -60 # one parameter left same in both, we used -55 in our fits
+	e_pas = -55 # one parameter left same in both, we used -55 in our fits
 	syn_strength = 5.5e-5 # uS
 
 	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
@@ -782,68 +794,194 @@ def inst_LHN_w_syns(target_name = 'ML9', target_body_id = 542634516, weight_thre
 	cell1.tree = cell1.trace_tree()
 
 	conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
-	all_synapses = []
-	for i in range(len(conns.bodyId_pre)):
-		pre_name = conns.type_pre[i]
+	
+	target, r = fetch_neurons(target_body_id)
+	target_syn_count = target.pre[0]
 
-		if combine_inputs:
-			if pre_name in [val['pre_name'] for val in all_synapses]:
-				print('adding synapses from {} to existing synapses'.format(pre_name))
-				syn_locs = fetch_synapse_connections(source_criteria = conns.bodyId_pre[i], target_criteria = target_body_id)
-				syn_locs = syn_locs[['x_post', 'y_post', 'z_post']]
+	### instantiate synapses for each connection with weight > threshold
+	all_conns = []
+	for pre_name in set(conns.type_pre):
+		# find all body IDs for this presynaptic neuron type
+		pre_bodyIds = [conns.bodyId_pre[ind] for ind in range(len(conns.type_pre)) if conns.type_pre[ind] == pre_name]
 
-				curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
+		# get all synapse xyz locations for the body IDs in this neuron type (may be just 1 body ID)
+		syn_locs = pd.DataFrame(columns = ['x_post', 'y_post', 'z_post'])
+		for pre_id in pre_bodyIds:
+			curr_syn_locs = fetch_synapse_connections(source_criteria = pre_id, target_criteria = target_body_id)
+			syn_locs = syn_locs.append(curr_syn_locs[['x_post', 'y_post', 'z_post']])
 
-				# find the index of the existing location
-				# extend existing syns by curr_syns, add to syn_count
-
-				toAppend = {}
-				toAppend.update(pre_name = pre_name, syns = curr_syns, syn_count = len(curr_syns))
-				all_synapses.append(toAppend)
-
-
-		print('adding synapses from {}'.format(pre_name))
-		syn_locs = fetch_synapse_connections(source_criteria = conns.bodyId_pre[i], target_criteria = target_body_id)
-		syn_locs = syn_locs[['x_post', 'y_post', 'z_post']]
-
+		# add synapses onto skeleton
 		curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
 
+		print('adding {} synapses from {} to {}'.format(str(num), pre_name, target_name))
+
+		# measure uEPSP for connection at pSIZ and distal axon
+		# activate the stim
+		netstim.number = 1
+		h.load_file('stdrun.hoc')
+		x = h.cvode.active(True)
+		v_siz = h.Vector().record(cell1.axon[siz_sec](siz_seg)._ref_v)
+		v_axon = h.Vector().record(cell1.axon[axon_sec](axon_seg)._ref_v)
+		if target_name == 'ML9' and target_body_id == 542634516:
+			# for some reason this ML9's axon[0](1) is at the primary branch point
+			v_soma = h.Vector().record(cell1.soma[0](0.5)._ref_v)	
+		else:
+			v_soma = h.Vector().record(cell1.axon[0](0.5)._ref_v)
+		t = h.Vector().record(h._ref_t)                     				# Time stamp vector
+		h.finitialize(-55 * mV)
+		h.continuerun(40*ms)
+		if toPlot:
+			plt.plot(list(t), list(v_siz), label = 'siz')
+			plt.plot(list(t), list(v_axon), label = 'axon')
+			plt.plot(list(t), list(v_soma), label = 'soma')
+			plt.legend(loc = 'upper right')
+			plt.show()
+		netstim.number = 0
+
+		# measure rise time of EPSP at pSIZ
+		t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
+
 		toAppend = {}
-		toAppend.update(pre_name = pre_name, syns = curr_syns, syn_count = len(curr_syns))
-		all_synapses.append(toAppend)
+		### add measurement of synaptic budget!!!
+		toAppend.update(post_name = target_name, post_id = target_body_id,
+							pre_name = pre_name, pre_id = str(pre_bodyIds)[1:-1],
+							syns = curr_syns, syn_count = len(curr_syns),
+							syn_budget = len(curr_syns) / target_syn_count,
+							num_instances = len(pre_bodyIds), stim = [netstim], 
+							uEPSP_siz = max(list(v_siz))+55, uEPSP_axon = max(list(v_axon))+55, 
+							uEPSP_soma = max(list(v_soma))+55,
+							t_10to90_siz = t_10to90_siz)
+		all_conns.append(toAppend)
 
 	# set up Impedance measurement class
 	imp = h.Impedance()
 	imp.loc(siz_seg, sec = cell1.axon[siz_sec])
 	imp.compute(transf_freq)	# starts computing transfer impedance @ freq 
 
-	# iterate through synapses
-	for pair in all_synapses:
-		curr_syns = pair['syns']
+	### iterate through all connections and measure impedances
+	for conn in all_conns:
+		curr_syns = conn['syns']
+
+		# iterate through each synapse in the connection
 		syn_info = []
 		for syn in curr_syns:
-			# find Z_c from synapse to siz_loc AND distance between the points, append to list
-			curr_loc = syn.get_segment()
-			curr_transf_imp = imp.transfer(curr_loc)
-			curr_distance = h.distance(cell1.axon[siz_sec](siz_seg), curr_loc)
+			# find Z_c = transfer impedance from synapse to siz_loc 
+			curr_transf_imp = imp.transfer(syn.get_segment())
+			# find Z_i = input impedance at synapse
+			curr_input_imp = imp.input(syn.get_segment())
+			# find distance from synapse to siz_loc
+			curr_distance = h.distance(cell1.axon[siz_sec](siz_seg), syn.get_segment())
+			# find voltage transfer ratio from synapse to siz_loc
+			curr_transf_ratio = imp.ratio(syn.get_segment())
 
-			# convert to dictionary input with interpretable outputs
+			# record individual synapse info
 			toAppend = {}
-			toAppend.update(dist_to_siz = curr_distance, Zc_to_siz = curr_transf_imp)
+			toAppend.update(dist_to_siz = curr_distance, Zc_to_siz = curr_transf_imp, 
+							Zi = curr_input_imp, V_ratio = curr_transf_ratio)
 			syn_info.append(toAppend)
 
-		plt.scatter([val['dist_to_siz'] for val in syn_info], [val['Zc_to_siz'] for val in syn_info], 
-						label = "{} w/ {} synapses".format(pair['pre_name'], str(pair['syn_count'])),
+		# update 'conn'
+		conn.update(mean_dist_to_siz = mean([val['dist_to_siz'] for val in syn_info]),
+						mean_Zc_to_siz = mean([val['Zc_to_siz'] for val in syn_info]),
+						mean_Zi = mean([val['Zi'] for val in syn_info]),
+						mean_V_ratio = mean([val['V_ratio'] for val in syn_info]))
+
+		if toPlot:
+			plt.scatter([val['dist_to_siz'] for val in syn_info], [val['Zc_to_siz'] for val in syn_info], 
+						label = "{} w/ {} synapses".format(conn['pre_name'], str(conn['syn_count'])),
 						alpha = 0.2)
 
-	# plot synapse to SIZ distance vs transfer impedance
-	plt.legend(loc = 'upper right')
-	plt.xlabel('distance, synapse to SIZ (um)')
-	plt.ylabel('transfer impedance, synapse to SIZ (MOhm)')
-	plt.title('inputs onto {} {}'.format(target_name, str(target_body_id)))
+	if toPlot:
+		# plot synapse to SIZ distance vs transfer impedance
+		plt.legend(loc = 'upper right')
+		plt.xlabel('distance, synapse to SIZ (um)')
+		plt.ylabel('transfer impedance (MOhm)')
+		plt.title('inputs onto {} {}'.format(target_name, str(target_body_id)))
+		#plt.show()
+
+		plt.rcParams["figure.figsize"] = (10,10)
+		all_conns = pd.DataFrame(all_conns)
+		subset = pd.DataFrame(all_conns[['syn_count', 'uEPSP_siz', 'uEPSP_axon', 't_10to90_siz', 'mean_dist_to_siz', 'mean_Zc_to_siz', 'mean_Zi', 'mean_V_ratio']])
+		sns.set_theme(style="ticks")
+		sns.set(font_scale = 0.5)
+		g = sns.pairplot(subset, height = 1, aspect = 0.8, corner = True)
+		g.savefig('{}_{}_scatter_matrix.svg'.format(target_name, str(target_body_id)))
+
+	return all_conns
+
+def attr_per_conn(target_neuron_file = 'LHN_list_siz_axon_locs.csv', weight_threshold = 10, transf_freq = 20):
+	'''
+		for each neuron in a list (i.e. a list of LHNs), find information about its
+		input connections, such as EPSP size, impedance measures, synapse counts, etc.
+
+		possible inputs: target_neuron_file = 'KC_list_siz_axon_locs.csv'
+	'''
+	nrns = pd.read_csv(target_neuron_file)
+
+	# iterate through each target neuron, concatenate relevant file info
+	nrns_input_attrs = pd.DataFrame()
+	for i in range(nrns.shape[0]):
+		curr_input_attrs = find_input_attrs(target_name = nrns.iloc[i].lhn, target_body_id = nrns.iloc[i].lhn_id,
+												weight_threshold = weight_threshold, transf_freq = transf_freq,
+												siz_sec=nrns.iloc[i].siz_sec, siz_seg = nrns.iloc[i].siz_seg,
+												axon_sec=nrns.iloc[i].axon_sec, axon_seg = nrns.iloc[i].axon_seg)
+
+		nrns_input_attrs = nrns_input_attrs.append(curr_input_attrs)
+
+	return nrns_input_attrs
+
+def analyze_attrs(n):
+	'''
+		some analysis code for generating graphs about correlations among
+		attributes for each connection
+	'''
+	import pandas as pd
+
+	### analyze LHN data
+	n = pd.read_csv('conn_attrs_all_LHNs.csv')
+	n_pn = n.loc[(n['pre_name'].str.contains('adPN')) | (n['pre_name'].str.contains('lPN'))] # excitatory PN inputs
+	n_pn_out = n_pn.loc[~(n_pn['post_name'].str.contains('local'))]	# excitatory PN inputs onto LHONs
+	n_pn_local = n_pn.loc[(n_pn['post_name'].str.contains('local'))] # excitatory PN inputs onto LHLNs
+
+	plt.scatter(n_pn_out.syn_count, n_pn_out.mean_Zc_to_siz, color = 'red', label = 'inputs to LHONs')
+	plt.scatter(n_pn_local.syn_count, n_pn_local.mean_Zc_to_siz, color = 'blue', label = 'inputs to LHLNs')
+	plt.legend(loc='upper right')
+
+	plt.xlabel('number of synapses in connection')
+	plt.ylabel('avg. transfer impedance from synapses to SIZ (MOhm)')
 	plt.show()
 
-	return all_synapses
+	# pairplot scatter matrix
+	sub_n = pd.DataFrame(n[['syn_count', 'uEPSP_siz', 'uEPSP_axon', 't_10to90_siz', 'mean_dist_to_siz', 'mean_Zc_to_siz', 'mean_Zi', 'mean_V_ratio']])
+	sns.set_theme(style="ticks")
+	sns.set(font_scale = 0.6)
+	g_n = sns.pairplot(sub_n, height= 1, aspect = 0.8, corner = True, plot_kws = {"s":3})
+	g_n.savefig('all_LHNs_scatter_mat.svg')
+
+	### analyze KC data
+	n = pd.read_csv('conn_attrs_some_KCs.csv')
+	n_pn = n.loc[(n['pre_name'].str.contains('adPN')) | (n['pre_name'].str.contains('lPN'))] # excitatory PN inputs
+	# plot transf impedance vs syn count of each KC, can also do EPSP at SIZ / anything else
+	for kc_id in set(n_pn.post_id):
+		kc = n_pn.query('post_id == @kc_id')['post_name'].iloc[0]
+		plt.plot(n_pn.query('post_id==@kc_id')['syn_count'], n_pn.query('post_id==@kc_id')['mean_Zc_to_siz'], 
+					label = "{}-{}".format(kc, str(kc_id)))
+	plt.legend(loc = 'upper right')
+
+def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 10, 
+								siz_sec = 569, siz_seg = 0.01, transf_freq = 20, 
+								axon_sec = 609, axon_seg = 0.58,
+								toPlot = False):
+	'''
+		given a downstream (target) neuron, an upstream (input) neuron class, and 
+		one representative of that class, repeatedly shuffle the synaptic locations of
+		that one representative, using the synapse locations of other neurons of that
+		class as potential shuffle locations. 
+		generate: histogram of possible uEPSP amplitudes for each shuffle, with the baseline
+			uEPSP size marked with a vertical line
+		return: list of simulated uEPSPs at shuffled synapse locations
+	'''
+	print('todo')
 
 def sim_DM1(params = 'Gouwens'):
 	'''
@@ -950,6 +1088,13 @@ def sim_DM1(params = 'Gouwens'):
 
 	# print area
 	print("DM1 area: {} um^2".format(str(cell1.surf_area())))
+
+def find_KC_classes():
+	'''
+		cycle through folder of KC SWCs, pull out body IDs and search for their subclasses
+		output csv of body ID and KC 
+	'''
+	print('todo')
 
 '''
 Past parameter fits: 
