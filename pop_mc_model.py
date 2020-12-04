@@ -9,13 +9,13 @@ conn_file = "20-09-26_all_conns.csv"
 import sys
 sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model")
 from run_local5 import *
-from datetime import date
+from datetime import datetime
 import seaborn as sns
 
 # set up API connection to neuprint hemibrain server
 from neuprint import Client
-from neuprint import fetch_simple_connections, fetch_synapse_connections
-from neuprint import SynapseCriteria as SC
+from neuprint import fetch_simple_connections, fetch_synapse_connections, fetch_neurons
+from neuprint import SynapseCriteria as SC, NeuronCriteria as NC
 c = Client('neuprint.janelia.org', dataset = 'hemibrain:v1.1',token='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImxpdXRvbnk2NkBnbWFpbC5jb20iLCJsZXZlbCI6Im5vYXV0aCIsImltYWdlLXVybCI6Imh0dHBzOi8vbGgzLmdvb2dsZXVzZXJjb250ZW50LmNvbS9hLS9BT2gxNEdoNWZBS29QYzQxdzR0S0V1cmFXeEplbm41ZHBoajFrU2tBVS1mVD9zej01MD9zej01MCIsImV4cCI6MTc2NTAwNTUwOH0.itiAhvsvMYHVECWFVMuolEJo64pwSQgt9OLN2npyrys')
 
 h.load_file('import3d.hoc')
@@ -597,7 +597,7 @@ def param_search():
 
 	all_conns = pd.read_csv(conn_file)
 
-	start_time = date.today().strftime('%y-%m-%d-%H:%M:%S')
+	start_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
 
 	e_pas = -55 # mV
 
@@ -662,7 +662,7 @@ def param_search():
 
 	sim_params.to_excel('{}_mcfit_{}.xlsx'.format(date.today().strftime("%y-%m-%d"), str(len(sim_params))))
 
-	end_time = date.today().strftime('%y-%m-%d-%H:%M:%S')
+	end_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
 	print("start time: {}, end time: {}".format(start_time, end_time))
 
 	return sim_params, all_resids
@@ -740,19 +740,27 @@ def instantiate_lhns():
 		in the GUI for two example LHNs
 	'''
 
+	# population fit biophysical parameters
+	R_a = 350 # Ohm-cm
+	c_m = 0.6 # uF/cm^2
+	g_pas = 5.8e-5 # S/cm^2
+	e_pas = -55 # mV
+	syn_strength = 5.5e-5 # uS
+
 	# change to path for hemibrain DM1 
 	swc_path = "swc\\ML9-542634516.swc"
 	# swc_path = "swc\\KCs (pasha)\\KCa'b'-ap1-487834111.swc"
 	# swc_path = "swc\\KCs (pasha)\\KCab-s-331662717.swc"
 	# swc_path = "swc\\KCs (pasha)\\KCg-m-354775482.swc"
 	# swc_path = "swc\\L12-391609333.swc"
+	# swc_path = "swc\\local5-5813105722.swc"
 
-	# biophysical parameters from our fits
-	R_a = 350
-	c_m = 0.6
-	g_pas = 5.8e-5
-	e_pas = -55 # one parameter left same in both, we used -55 in our fits
-	syn_strength = 5.5e-5 # uS
+	# local5 params
+	R_a = 375 # ohm-cm ### NOTE: tripling R_a from 125
+	c_m = 1.2 # uF/cm^2
+	g_pas = 4.4e-5 # S/cm^2 
+	e_pas = -55 # mV
+	syn_strength = 3.5e-5 # uS, peak synaptic conductance
 
 	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
 	cell1.discretize_sections()
@@ -766,7 +774,8 @@ def instantiate_lhns():
 def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 10, 
 								siz_sec = 569, siz_seg = 0.01, transf_freq = 20, 
 								axon_sec = 609, axon_seg = 0.58,
-								toPlot = False):
+								toPlot = False,
+								param_set = 'pop_fit'):
 	'''
 		given the name and body ID of an existing LHN (which has a skeleton in the swc folder)
 		instantiate Cell and use hemibrain to add all synapses above a threshold weight
@@ -781,12 +790,19 @@ def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_thr
 	# get swc straight from neuprint:
 	#skel = fetch_skeleton(body = target_body_id, format = 'swc') # import skeleton
 
-	# biophysical parameters from our fits
-	R_a = 350
-	c_m = 0.6
-	g_pas = 5.8e-5
-	e_pas = -55 # one parameter left same in both, we used -55 in our fits
-	syn_strength = 5.5e-5 # uS
+	if param_set == 'pop_fit':
+		# biophysical parameters from our fits
+		R_a = 350
+		c_m = 0.6
+		g_pas = 5.8e-5
+		e_pas = -55 # one parameter left same in both, we used -55 in our fits
+		syn_strength = 5.5e-5 # uS
+	elif param_set == 'retr_local5_fit':
+		R_a = 375 # ohm-cm # x3 from 125
+		c_m = 1.2 # uF/cm^2
+		g_pas = 4.4e-5 # S/cm^2 
+		e_pas = -55 # mV
+		syn_strength = 3.5e-5 # uS, peak synaptic conductance
 
 	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
 	cell1.discretize_sections()
@@ -795,8 +811,9 @@ def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_thr
 
 	conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
 	
+	# get number of post-synapses on the target neuron
 	target, r = fetch_neurons(target_body_id)
-	target_syn_count = target.pre[0]
+	target_syn_count = target.post[0]
 
 	### instantiate synapses for each connection with weight > threshold
 	all_conns = []
@@ -909,12 +926,14 @@ def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_thr
 
 	return all_conns
 
-def attr_per_conn(target_neuron_file = 'LHN_list_siz_axon_locs.csv', weight_threshold = 10, transf_freq = 20):
+def attr_per_conn(target_neuron_file = 'LHN_list_siz_axon_locs.csv', weight_threshold = 10, transf_freq = 20,
+					param_set = 'pop_fit'):
 	'''
 		for each neuron in a list (i.e. a list of LHNs), find information about its
 		input connections, such as EPSP size, impedance measures, synapse counts, etc.
 
-		possible inputs: target_neuron_file = 'KC_list_siz_axon_locs.csv'
+		possible inputs: target_neuron_file = 'KC_list_siz_axon_locs.csv' # list of ~23 hand picked KCs
+						target_neuron_file = 'LHN_list_siz_axon_locs.csv' # list of our experimental-matched LHNs
 	'''
 	nrns = pd.read_csv(target_neuron_file)
 
@@ -924,11 +943,22 @@ def attr_per_conn(target_neuron_file = 'LHN_list_siz_axon_locs.csv', weight_thre
 		curr_input_attrs = find_input_attrs(target_name = nrns.iloc[i].lhn, target_body_id = nrns.iloc[i].lhn_id,
 												weight_threshold = weight_threshold, transf_freq = transf_freq,
 												siz_sec=nrns.iloc[i].siz_sec, siz_seg = nrns.iloc[i].siz_seg,
-												axon_sec=nrns.iloc[i].axon_sec, axon_seg = nrns.iloc[i].axon_seg)
+												axon_sec=nrns.iloc[i].axon_sec, axon_seg = nrns.iloc[i].axon_seg,
+												param_set = param_set)
 
 		nrns_input_attrs = nrns_input_attrs.append(curr_input_attrs)
 
 	return nrns_input_attrs
+
+### TODO 11/30: try above using different parameter sets and see if it decreases KC uEPSPs @ soma
+### 
+### update KC swc files and KC_list.csv file with Pasha's updates
+### perhaps try soma[0](0.5) rather than axon[0](0.5) for soma recording? 
+### focus on shuffling analysis since we might not end up using KC analysis
+### redo shuffling analysis for a few more ePN inputs onto LHN
+### redo shuffling expanding to more classes of inputs as target locs
+
+### should also test how well the retr local5 params do at predicting the population
 
 def analyze_attrs(n):
 	'''
@@ -968,20 +998,398 @@ def analyze_attrs(n):
 					label = "{}-{}".format(kc, str(kc_id)))
 	plt.legend(loc = 'upper right')
 
-def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 10, 
-								siz_sec = 569, siz_seg = 0.01, transf_freq = 20, 
+def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, weight_threshold = 3, 
+								input_names = ['DP1m_adPN', 'DM4_adPN'], 
+								siz_sec = 569, siz_seg = 0.0153, transf_freq = 20, 
 								axon_sec = 609, axon_seg = 0.58,
-								toPlot = False):
+								toPlot = False,
+								conn_class = ['adPN', 'lPN'],
+								run_count = 2):
 	'''
-		given a downstream (target) neuron, an upstream (input) neuron class, and 
-		one representative of that class, repeatedly shuffle the synaptic locations of
+		given a downstream (target_name) neuron, an upstream (conn_class) neuron class, and 
+		one representative of that class (input_name), repeatedly shuffle the synaptic locations of
 		that one representative, using the synapse locations of other neurons of that
 		class as potential shuffle locations. 
+		weight_threshold = 0: thus, candidate synapse locations can come from a connection type in conn_class
+			with as little as this # of synapses
+
 		generate: histogram of possible uEPSP amplitudes for each shuffle, with the baseline
 			uEPSP size marked with a vertical line
-		return: list of simulated uEPSPs at shuffled synapse locations
+		return: list of simulated uEPSP values at shuffled synapse locations
+		potentially: will need param: input_body_id = 635062078 (ML9)
 	'''
-	print('todo')
+	print('shuffling inputs onto {} {}'.format(target_name, str(target_body_id)))
+
+	# instantiate target (post-synaptic) cell
+	try:
+		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	except:
+		print('no SWC found')
+	# biophysical parameters from our fits
+	R_a = 350
+	c_m = 0.6
+	g_pas = 5.8e-5
+	e_pas = -55 # one parameter left same in both, we used -55 in our fits
+	syn_strength = 5.5e-5 # uS
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+	# get number of post-synapses on the target neuron
+	target, r = fetch_neurons(target_body_id)
+	target_syn_count = target.post[0]
+
+	# identify all potential synaptic sites for connections in class (xyz coordinates)
+	# could consider a Regex search here:
+	# fetch_simple_connections(upstream_criteria = NC(type='.*adPN.*', regex = True), downstream_criteria = target_body_id, min_weight = 0)
+	conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
+	# find names of input neurons which are of the 'to place' input class
+	nrns_in_class = [pre_name for pre_name in list(filter(None, conns.type_pre)) if any(class_marker in pre_name for class_marker in conn_class)]
+	potent_syn_locs = pd.DataFrame(columns = ['type_pre', 'bodyId_pre', 'x_post', 'y_post', 'z_post'])
+	print("neurons in the \'to place\' class: {}".format(str(nrns_in_class)))
+	# treat each unique connection type as one:
+	for nrn_name in set(nrns_in_class):
+		# find all body IDs for this presynaptic neuron type
+		pre_bodyIds = [conns.bodyId_pre[ind] for ind in range(len(conns.type_pre)) if conns.type_pre[ind] == nrn_name]
+
+		# get all synapse xyz locations for the body IDs in this neuron type (may be just 1 body ID)
+		nrn_syn_count = 0
+		for pre_id in pre_bodyIds:
+			curr_syn_locs = fetch_synapse_connections(source_criteria = pre_id, target_criteria = target_body_id)
+			curr_syn_locs = curr_syn_locs[['bodyId_pre', 'x_post', 'y_post', 'z_post']]
+			curr_syn_locs = curr_syn_locs.assign(type_pre = nrn_name)
+			potent_syn_locs = potent_syn_locs.append(curr_syn_locs)
+			nrn_syn_count += curr_syn_locs.shape[0]
+		print('added pot. syn locs from type {}, {} insts., {} total syns'.format(nrn_name, str(len(pre_bodyIds)), 
+																					str(nrn_syn_count)))
+
+	# KNN to map each potential synapse location x, y, z (scaled x0.008) to the closest segment
+	tree_coords = cell1.tree.loc[:, 'x':'z']
+	syn_coords = potent_syn_locs.loc[:, 'x_post':'z_post'] / 125
+	nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(tree_coords)
+	distances, indices = nbrs.kneighbors(syn_coords)
+	# indices: index in tree of closest section and point location to a synapse
+
+	# produce dictionary of shuffle data for each input type:
+	# keys: string of input connection type; 
+	# value: [base_attrs dictionary, run_attrs dataframe (row per shuffle)]
+	shuffle_results = {}
+	for input_name in input_names:
+
+		# instantiate sites of baseline specified input connection onto skeleton
+		input_syn_locs = potent_syn_locs.loc[potent_syn_locs.type_pre == input_name]
+		input_bodyIds = [conns.bodyId_pre[ind] for ind in range(len(conns.type_pre)) if conns.type_pre[ind] == input_name]
+		curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = input_syn_locs, syn_strength = syn_strength)
+		print('adding {} synapses from {} to {}'.format(str(num), input_name, target_name))
+
+		# measure uEPSP for connection at pSIZ and distal axon and soma
+		netstim.number = 1 # activate stim
+		h.load_file('stdrun.hoc')
+		x = h.cvode.active(True)
+		v_siz = h.Vector().record(cell1.axon[siz_sec](siz_seg)._ref_v)
+		v_axon = h.Vector().record(cell1.axon[axon_sec](axon_seg)._ref_v)
+		if target_name == 'ML9' and target_body_id == 542634516:
+			# for some reason this ML9's axon[0](1) is at the primary branch point
+			v_soma = h.Vector().record(cell1.soma[0](0.5)._ref_v)	
+		else:
+			v_soma = h.Vector().record(cell1.axon[0](0.5)._ref_v)
+		t = h.Vector().record(h._ref_t)                     				# Time stamp vector
+		h.finitialize(-55 * mV)
+		h.continuerun(40*ms)
+		if toPlot:
+			plt.plot(list(t), list(v_siz), label = 'siz')
+			plt.plot(list(t), list(v_axon), label = 'axon')
+			plt.plot(list(t), list(v_soma), label = 'soma')
+			plt.legend(loc = 'upper right')
+			plt.show()
+		netstim.number = 0 # de-activate stim
+		# measure rise time of EPSP at pSIZ
+		t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
+
+		# save attributes of baseline input connection
+		base_input_attrs = {}
+		base_input_attrs.update(post_name = target_name, post_id = target_body_id,
+							pre_name = input_name, pre_id = str(input_bodyIds)[1:-1],
+							syns = curr_syns, syn_count = len(curr_syns),
+							syn_budget = len(curr_syns) / target_syn_count,
+							num_instances = len(input_bodyIds), stim = [netstim], 
+							uEPSP_siz = max(list(v_siz))+55, uEPSP_axon = max(list(v_axon))+55, 
+							uEPSP_soma = max(list(v_soma))+55,
+							t_10to90_siz = t_10to90_siz)
+
+		# repeatedly permute synapses to other potential locations, record new connection attributes
+		print('commence {} shuffles for input {}'.format(str(run_count), input_name))
+		run_attrs = []
+		for i in range(run_count):
+			# locations (rows in potent_syn_locs) to permute each synapse to
+			permute_locs = random.sample(range(potent_syn_locs.shape[0]), len(curr_syns))
+
+			# for each synapse, move it to the new location
+			original_loc = []
+			for j in range(len(curr_syns)):
+				# save current location
+				original_loc.append(curr_syns.object(j).get_segment())
+
+				# find section and segment info of new shuffle location
+				new_tree_ind = indices[permute_locs[j]]
+				sec = int(cell1.tree.loc[new_tree_ind, 'sec'])
+				i3d = cell1.tree.loc[new_tree_ind, 'i3d']	# the 3d point index on the section
+				loc = cell1.axon[sec].arc3d(i3d) / cell1.axon[sec].L
+
+				# move synapse to new location
+				curr_syns.object(j).loc(cell1.axon[sec](loc))
+				h.pop_section()
+
+			# for the new synapse distribution
+			# record geodesic distribution / input impedance distribution / transfer imp distr
+
+			# simulate EPSP
+			# measure uEPSP for connection at pSIZ and distal axon and soma
+			netstim.number = 1 # activate stim
+			h.load_file('stdrun.hoc')
+			x = h.cvode.active(True)
+			v_siz = h.Vector().record(cell1.axon[siz_sec](siz_seg)._ref_v)
+			v_axon = h.Vector().record(cell1.axon[axon_sec](axon_seg)._ref_v)
+			if target_name == 'ML9' and target_body_id == 542634516:
+				# for some reason this ML9's axon[0](1) is at the primary branch point
+				v_soma = h.Vector().record(cell1.soma[0](0.5)._ref_v)	
+			else:
+				v_soma = h.Vector().record(cell1.axon[0](0.5)._ref_v)
+			t = h.Vector().record(h._ref_t)                     				# Time stamp vector
+			h.finitialize(-55 * mV)
+			h.continuerun(40*ms)
+			netstim.number = 0 # de-activate stim
+			# measure rise time of EPSP at pSIZ
+			t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
+
+			# save attributes of permuted input connection
+			toAppend = {}
+			toAppend.update(permute_ind = i, 
+							uEPSP_siz = max(list(v_siz))+55, uEPSP_axon = max(list(v_axon))+55, 
+							uEPSP_soma = max(list(v_soma))+55)
+			run_attrs.append(toAppend)
+
+			print('permutation {}: uEPSP @ SIZ = {}'.format(str(i), str(toAppend['uEPSP_siz'])))
+
+			# reset synaptic locations back to their old locations
+			for j in range(len(curr_syns)):
+				curr_syns.object(j).loc(original_loc[j])
+
+		run_attrs = pd.DataFrame(run_attrs)
+
+		# plot histogram of uEPSP (at SIZ, soma) sizes
+		#plt.hist()
+
+		# plot overlay of various geodesic, Z_input, Z_c histograms
+
+		shuffle_results[input_name] = [base_input_attrs, run_attrs]
+		
+	return shuffle_results
+
+def test_shuffle_count():
+	'''
+		test number of runs needed to converge on stable uEPSP distribution when doing
+		multiple runs of shuffling
+	'''
+
+	run_lengths = [2, 4, 6, 8]
+
+	shuffle_run = {}
+
+	for rc in run_lengths:
+		b, r = shuffle_syn_locs_by_class(run_count = rc)
+		shuffle_run[rc] = r
+
+	fig, axs = plt.subplots(nrows = 2, ncols = 2)
+	axs = axs.reshape(-1)	# allows us to linearly iterate through subplots
+	i = 0
+	for key, val in shuffle_run.items():
+		axs[i].hist(val.uEPSP_siz, bins = 20)
+		axs[i].set_title('shuffle synapses {} times'.format(str(key)))
+		axs[i].axvline(b['uEPSP_siz'], color = 'red', linestyle = 'dashed')
+		i += 1
+	axs[0].set_ylabel('frequency')
+	axs[-1].set_xlabel('uEPSP @ SIZ (mV)')
+	plt.show()
+
+	return shuffle_run
+
+# shuffling hypotheses:
+# - is it mainly small inputs that have uEPSPs << mean shuffled uEPSPs? (bc less synapses=more clustering)
+# - for these small inputs, is there something systematic about their Strahler order (i.e. very low)
+#		moreover, are the inputs spread across many distal branches (i.e. not coincidentally low ordered)
+
+def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv', run_count = 750, 
+							to_shuffle_weight_threshold = 10, to_place_weight_threshold = 3,
+							to_shuffle_class = ['adPN', 'lPN'], to_place_class = ['adPN', 'lPN', 'vPN']):
+	'''
+		NOTE: if running for different to_shuffle or to_place classes, change title of output CSV
+
+		for each target neuron in a list (i.e. a list of LHNs):
+			find instances within specified classes of inputs = "to shuffle" (with >threshold synapses), 
+			shuffle their synapse locations using another specified 
+			set of potential input class synapse locations = "to place" (>threshold synapses) 
+			using shuffle_syn_locs method
+		params: to_shuffle_class = ['adPN', 'lPN'] for excitatory PNs
+								 = ['adPN', 'lPN', 'vPN'] if including inhibitory PNs
+
+		if an input onto the target also happens to have multiple other instances of itself (i.e. sister PNs)
+			synapsing onto the target, its instantiation (i.e. when synapses are added onto the target) will include
+			the weaker, sub-weight threshold connections
+			even if multiple instances of a connection type have a total synapse count >threshold, if each 
+			individual instance is <threshold than it won't be identified as a 'to_shuffle' neuron
+	'''
+	start_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
+
+	nrns = pd.read_csv(target_neuron_file)
+
+	all_shuffle_data = {}
+	# for each target neuron in our list, shuffle its to_shuffle_class inputs
+	for i in range(nrns.shape[0]):
+		target_name = nrns.iloc[i].lhn
+		target_body_id = nrns.iloc[i].lhn_id
+		# find input neurons:
+		conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, 
+											min_weight = to_shuffle_weight_threshold)
+		# filter input neurons by whether they are in to_shuffle_class: 
+		ePN_inputs = [pre for pre in list(filter(None, conns.type_pre)) if any(class_type in pre for class_type in to_shuffle_class)]
+		print(str(ePN_inputs))
+		ePN_inputs = list(set(ePN_inputs)) # treat each input "type" as simultaneously active (i.e. sister PNs)
+		print('# sig. inputs: {}, # rows: {}'.format(str(len(ePN_inputs)), 
+						str(int(np.ceil(len(ePN_inputs)/3)))))
+		# for each input neuron, shuffle its synapses using to_place_class as candidate locations 
+		# returns dictionary w/ keys as input neuron names, values as [base_attrs dictionary, run_attrs dataframe (row per shuffle)]
+		shuffles = shuffle_syn_locs_by_class(input_names = ePN_inputs, run_count = run_count,
+												target_name = target_name, target_body_id = target_body_id, 
+												siz_sec=nrns.iloc[i].siz_sec, siz_seg = nrns.iloc[i].siz_seg,
+												axon_sec=nrns.iloc[i].axon_sec, axon_seg = nrns.iloc[i].axon_seg,
+												conn_class = to_place_class,
+												weight_threshold = to_place_weight_threshold)
+		if len(ePN_inputs) > 0:
+			plt.rcParams["figure.figsize"] = (6,3)
+			fig, axs = plt.subplots(nrows = int(np.ceil(len(ePN_inputs)/3)), ncols = 3,
+										constrained_layout = True)
+			axs = axs.reshape(-1)	# allows us to linearly iterate through subplots
+			i = 0
+			for key, val in shuffles.items():
+				axs[i].hist(val[1].uEPSP_siz, bins = 30)
+				axs[i].set_title('{}, {}s{}i.'.format(str(key), str(val[0]['syn_count']), str(val[0]['num_instances'])))
+				axs[i].axvline(val[0]['uEPSP_siz'], color = 'red', linestyle = 'dashed')
+				i += 1
+			axs[0].set_ylabel('frequency')
+			axs[-1].set_xlabel('uEPSP @ SIZ (mV)')
+			#plt.subplots_adjust(wspace = 0.3, hspace = 0.3)
+			plt.suptitle('target: {} {}, s=synapses, i=instances'.format(target_name, str(target_body_id)))
+			#plt.show()
+			#plt.tight_layout()
+			plt.savefig('shuffles\\{}-{}.png'.format(target_name, str(target_body_id)), 
+							format = 'png', bbox_inches='tight', dpi = 300)
+		else:
+			print('{} {}: no inputs w/ > threshold syns to shuffle'.format(target_name, str(target_body_id)))
+
+		all_shuffle_data[(target_name, target_body_id)] = shuffles
+
+	'''
+	if target_id == 542634516:
+		ml9_input_pns = ['DP1m_adPN', 'DM4_adPN', 'VA2_adPN', 'DM1_lPN']
+	elif target_id == 573329304:
+		ml9_input_pns = ['DM4_adPN', 'DM1_lPN']
+	elif target_id == 571666434:
+		ml9_input_pns = ['DP1m_adPN', 'DP1l_adPN', 'DM1_lPN']
+	elif target_id == 640963556:
+		ml9_input_pns = ['DP1m_adPN', 'DM1_lPN']
+
+	shuffle_run = {}
+
+	for pn in ml9_input_pns:
+		b, r = shuffle_syn_locs_by_class(target_body_id = ml9_id, input_name = pn, run_count = run_count)
+		shuffle_run[pn] = [b, r]
+
+	fig, axs = plt.subplots(nrows = 2, ncols = 2)
+	axs = axs.reshape(-1)	# allows us to linearly iterate through subplots
+	i = 0
+	for key, val in shuffle_run.items():
+		axs[i].hist(val[1].uEPSP_siz, bins = 30)
+		axs[i].set_title('shuffle input PN {}'.format(str(key)))
+		axs[i].axvline(val[0]['uEPSP_siz'], color = 'red', linestyle = 'dashed')
+		i += 1
+	axs[0].set_ylabel('frequency')
+	axs[-1].set_xlabel('uEPSP @ SIZ (mV)')
+	plt.show()
+	'''
+
+	base_v_shuff_EPSP = []
+	for lhn in all_shuffles:
+		for pn, shuff in lhn[1].items():
+			lhn_name = lhn[0][0]
+			lhn_id = lhn[0][1]
+			pn_name = pn
+			base_EPSP = shuff[0]['uEPSP_siz']
+			shuff_EPSP_med = np.median(shuff[1].uEPSP_siz)
+			shuff_EPSP_mea = np.mean(shuff[1].uEPSP_siz)
+			shuff_EPSP_std = np.std(shuff[1].uEPSP_siz)
+			toA = {}
+			toA.update(lhn_name = lhn_name, lhn_id = lhn_id, pn_name = pn_name, base_EPSP = base_EPSP, 
+						shuff_EPSP_med = shuff_EPSP_med, shuff_EPSP_mea = shuff_EPSP_mea, 
+						shuff_EPSP_std = shuff_EPSP_std)
+			syn_count = shuff[0]['syn_count']
+			num_instances = shuff[0]['num_instances']
+			toA.update(syn_count = syn_count, num_instances = num_instances)
+			base_v_shuff_EPSP.append(toA)
+	base_v_shuff_EPSP = pd.DataFrame(base_v_shuff_EPSP)
+
+	# base_v_shuff.to_csv('20-12-04_shuff_ePN2ePN_LHN_750.csv')
+
+	end_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
+	print("start time: {}, end time: {}".format(start_time, end_time))
+
+	return all_shuffle_data, base_v_shuff_EPSP
+
+def visualize_inputs(target_name = 'ML9', target_body_id = 542634516, 
+						input_name = 'DP1m_adPN'):
+	'''
+		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
+		(potentially pulling from neuprint) for the sake of visualization
+
+		i.e. go to ModelView in the GUI to see the morphology, synapse locations, etc.
+	'''
+	global cell1, curr_syns, netstim, netcons, num
+
+	# instantiate target (post-synaptic) cell
+	try:
+		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	except:
+		print('no SWC found')
+	# biophysical parameters from our fits
+	R_a = 350
+	c_m = 0.6
+	g_pas = 5.8e-5
+	e_pas = -55 # one parameter left same in both, we used -55 in our fits
+	syn_strength = 5.5e-5 # uS
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+	# get number of post-synapses on the target neuron
+	target, r = fetch_neurons(target_body_id)
+	target_syn_count = target.post[0]
+
+	# add all input synaptic site locations
+	conns = fetch_simple_connections(upstream_criteria = input_name, downstream_criteria = target_body_id)
+	pre_bodyIds = conns.bodyId_pre
+	syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
+	curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
+	print('adding {} synapses from {} to {}; budget = {}'.format(str(num), input_name, target_name, str(num/target_syn_count)))
+
+	# access a random section
+	h.load_file('stdrun.hoc')
+	x = h.cvode.active(True)
+	v_siz = h.Vector().record(cell1.axon[0](0.5)._ref_v)
+
 
 def sim_DM1(params = 'Gouwens'):
 	'''
