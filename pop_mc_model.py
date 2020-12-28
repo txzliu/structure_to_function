@@ -1,8 +1,4 @@
 
-### the file containing list of LHN and PN body IDs and EPSP sizes
-### was 20-08-27_all_conns.csv prior to final body ID refresh on 20-09-26
-conn_file = "20-09-26_all_conns.csv"
-
 ### NOTE: file should be run from directory:
 ### C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model\\population_model\\
 
@@ -11,6 +7,9 @@ sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\c
 from run_local5 import *
 from datetime import datetime
 import seaborn as sns
+
+# import pop_sc_model to generate EPSP peaks given SC param sets
+from pop_sc_model import *
 
 # set up API connection to neuprint hemibrain server
 from neuprint import Client
@@ -202,6 +201,51 @@ class Cell():
 
 		return syns, nc, ncs, num_synapses
 
+	def add_synapses_subtree(self, sec_for_subtree, syn_count, syn_strength):
+		'''
+			add <syn_count> synapses to random sections in the subtree of 
+			self.axon[<sec_for_subtree>]
+		'''
+
+		# get section numbers in the subtree
+		subtree_secs = self.axon[sec_for_subtree].subtree()
+		subtree_sec_nums_brack = [str(sec).partition('axon')[2] for sec in subtree_secs]
+		subtree_sec_nums = [re.findall("\[(.*?)\]", sec)[0] for sec in subtree_sec_nums_brack] # debracket 
+
+		### add synapses onto morphology
+		syns = h.List()
+		j = 0
+		for index in range(syn_count):
+
+			sec = int(random.choice(subtree_sec_nums))
+			loc = random.uniform(0, 1)
+
+			syns.append(h.Exp2Syn(self.axon[sec](loc)))
+
+			### synapse parameters from Tobin et al paper: 
+			syns.object(j).tau1 = 0.2 #ms
+			syns.object(j).tau2 = 1.1 #ms
+			syns.object(j).e = -10 #mV, synaptic reversal potential = -10 mV for acetylcholine? 
+			# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3125135/
+			#syns.object(j).g = 0.0001 #uS default ### seems to have no effect on the result
+
+			h.pop_section() # clear the section stack to avoid overflow 
+			j += 1
+
+		### use NetStim to activate NetCon, initially inactive
+		nc = h.NetStim()
+		nc.number = 0
+		nc.start = 0
+		nc.noise = 0
+
+		ncs = h.List()
+		for i in range(len(list(syns))):
+			ncs.append(h.NetCon(nc, syns.object(i)))
+			ncs.object(i).weight[0] = syn_strength # uS, peak conductance change
+
+		num_synapses = syn_count
+
+		return syns, nc, ncs, num_synapses
 
 	def total_length(self):
 		total_length = 0
@@ -233,13 +277,33 @@ def time_to_percent_peak(t, v, perc):
 	#time_of_perc = np.array(t)[ind_of_perc]
 	return time_of_perc
 
+def modify_EPSP_in_all_conns():
+	'''
+		20-12-08: single use script to modify 'epsp_exp' column in 20-09-26_all_conns
+			save out as a new csv 20-12-08_all_conns
+			same as the 9-26 version, but with EPSP values refreshed to Jamie's 10/01 corrections
+
+		update: change this to the revised 12-08 EPSP amplitudes
+			save out as overwriting the csv 20-12-08_all_conns
+	'''
+
+	prev_conn = pd.read_csv("20-09-26_all_conns.csv")
+	#epsp_dir = pd.read_csv("20-10-01_Jamie's refreshed epsp_peaks.csv", index_col = 0)
+	epsp_dir = pd.read_csv("20-12-08_Jamie's epsp_peaks, max of avgs.csv", index_col = 0)
+	for i in range(prev_conn.shape[0]):
+		prev_conn.at[i, 'epsp_exp'] = epsp_dir.loc[prev_conn.iloc[i]['pn'], prev_conn.iloc[i]['lhn']]
+	prev_conn.to_csv("20-12-08_all_conns.csv")
+
 # previously was local5 params: epas = -55, cm = 1.2, synstrength = 3.5e-5, ra = 125, gpas = 4.4e-5
 # now error peak no skip params
-def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 5.8e-5, params = 'abs_norm_noskip',
-					save_excel = False, show_plot = False, show_scatter = False, show_kinetics_scatter = False):
+def find_peak_vals_MC(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 5.8e-5, params = 'abs_norm_noskip',
+					save_excel = False, show_plot = False, show_scatter = False, show_kinetics_scatter = False,
+					conn_file = "20-12-08_all_conns.csv"):
 	'''
 		Given biophysical parameter inputs, output the resulting simulated EPSPs across the 
 		entire population. 
+
+		TODO: change synstrength parameter name to gsyn
 	'''
 
 	###
@@ -349,6 +413,9 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 		sim_traces.append(curr_trace)
 
 	### average together traces: find instances of each connection, then average each set of instances
+	# values per connection are found from the average trace
+	# I verified that the EPSP sim peaks are virtually the same with this method and the old one
+	# kinetic predictions should be improved
 	sim_avgs_v2 = []
 	lhn_list = ['CML2', 'L1', 'L11', 'L12', 'L13', 'L15', 'ML3', 'ML8', 'ML9', 'V2', 'V3', 'local2', 'local5', 'local6']
 	pn_list = ['DA4l', 'DC1', 'DL4', 'DL5', 'DM1', 'DM3', 'DM4', 'DP1m', 'VA1v', 'VA2', 'VA4', 'VA6', 
@@ -383,15 +450,17 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 
 				# add LHN, PN, and info about the simulated trace to data table:
 				toAppend = {}
-				toAppend.update(lhn = lhn, pn = pn, epsp_sim = max(avg_sim),
+				toAppend.update(e_pas = epas, c_m = cm, syn_strength = synstrength,	R_a = ra, g_pas = gpas,
+								lhn = lhn, pn = pn, epsp_sim = max(avg_sim),
 								epsp_exp = sim_traces[trace_locs[0]]['v_exp_peak'],
 								t_sim_10to90 = t_10to90_sim, t_sim_0to80 = t_0to80_sim,
 								t_exp_10to90 = t_10to90_exp)
 				sim_avgs_v2.append(toAppend)
-	sim_avgs_v2 = pd.DataFrame(sim_avgs_v2)
+	sim_avgs = pd.DataFrame(sim_avgs_v2)
 
+	'''
 	### old method:
-	### average together traces: find instances of each connection, then average each set of instances
+	# values per connection (PN-LHN) are averages from each instance of the connection trace
 	conn_indices = {} # keys are tuples of LHN, PN names; values are indices of the connections
 	for i in range(len(sim_traces)):
 		curr_conn = (sim_traces[i]["lhn"], sim_traces[i]["pn"])
@@ -420,6 +489,7 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 						t_exp_10to90 = t_10to90_exp)
 		sim_avgs.append(toAppend)
 	sim_avgs = pd.DataFrame(sim_avgs)
+	'''
 
 	# compute normalized RSS error
 	sum_peak_err = 0
@@ -495,7 +565,7 @@ def find_peak_vals(epas = -55, cm = 0.6, synstrength = 5.5e-5, ra = 350, gpas = 
 		'''
 		plt.show()
 
-	return sim_traces, sim_avgs, sim_avgs_v2, sum_peak_err
+	return sim_traces, sim_avgs, sum_peak_err
 
 def plot_traces(sim_traces, cm, synstrength, ra, gpas):
 	'''
@@ -593,7 +663,12 @@ def find_error(t1, v1, t2, v2):
 
 	return peak_err, trace_err
 
-def param_search():
+def param_search_MC(conn_file = "20-12-08_all_conns.csv"):
+	'''
+		conn_file: the file containing list of LHN and PN body IDs and EPSP sizes
+					was 20-08-27_all_conns.csv prior to final body ID refresh on 20-09-26
+					after EPSP refresh is now 20-12-08_all_conns.csv
+	'''
 
 	all_conns = pd.read_csv(conn_file)
 
@@ -601,15 +676,21 @@ def param_search():
 
 	e_pas = -55 # mV
 
-	# 20-09-27 after refreshing body IDs after Pasha's final revisions, saving all_resids
-	# 8 * 4 * 13 * 7 = 2912
-	syn_strength_s = [2.5e-5, 3.0e-5, 3.5e-5, 4.0e-5, 4.5e-5, 5.0e-5, 5.5e-5, 6.0e-5]
+	# note: for other run tiling other part of g_pas:
+	# need to use the refreshed version of all_conns, then re-run the below eventually too
+
+	# 20-12-08 after refreshing EPSP peaks, local6 morphologies -- hopefully first of final
+	# still likely need to tile other part of g_pas
+	# 12 * 4 * 13 * 16 = 9984
+	syn_strength_s = np.arange(2.5e-5, 8.1e-5, 0.5e-5)
 	c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
 	g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
-	R_a_s = np.arange(50, 351, 50) # ohm-cm 
+	R_a_s = np.arange(75, 451, 25) # ohm-cm 
 
-	sim_params = []
-	all_resids = []
+	# different types of errors evaluated (over all connections) per paramater set
+	err_per_paramset = []
+	# EPSP amplitude and kinetics per connection, for each parameter set
+	sim_per_conn_per_paramset = pd.DataFrame()
 
 	# iterate through all biophysical parameter combinations
 	for syn_strength_i in syn_strength_s:
@@ -618,54 +699,139 @@ def param_search():
 				for R_a_i in R_a_s:
 
 					### following errors skip local5/vl2a
-					sum_peak_err = 0 # sum of absolute values of normalized residuals
-					sum_peak_err_notnorm = 0 # sum of absolute values of non-normalized residuals
-					sum_peak_err_rss = 0 # sum of squares of normalized residuals
-				
-					### doesn't skip local5/vl2a
-					sum_peak_err_noskip = 0 # sum of absolute values of normalized residuals
-					sum_peak_err_notnorm_noskip = 0 # sum of absolute values of non-normalized residuals
+					abs_norm_skip = 0 # sum of absolute values of normalized residuals
+					abs_nonorm_skip = 0 # sum of absolute values of non-normalized residuals
+					squ_norm_skip = 0 # sum of squares of normalized residuals
 					
-					sim_traces, sim_avgs, rss_err = find_peak_vals(cm = c_m_i, ra = R_a_i, synstrength = syn_strength_i,
+					### doesn't skip local5/vl2a
+					abs_norm_noskip = 0 # sum of absolute values of normalized residuals
+					abs_nonorm_noskip = 0 # sum of absolute values of non-normalized residuals
+					squ_norm_noskip = 0 # sum of squares of normalized residuals
+					
+					sim_traces, sim_avgs, rss_err = find_peak_vals_MC(cm = c_m_i, ra = R_a_i, synstrength = syn_strength_i,
 														  gpas = g_pas_i, save_excel = False, show_scatter = False)
 
 					for i in range(len(sim_avgs)):
 						normalized_resid = (sim_avgs.loc[i, 'epsp_sim'] - sim_avgs.loc[i, 'epsp_exp']) / sim_avgs.loc[i, 'epsp_exp']
-						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
-							sum_peak_err += np.abs(normalized_resid) # normalized residual
+						
+						abs_norm_noskip += np.abs(normalized_resid) # normalized residual
+						abs_nonorm_noskip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+						squ_norm_noskip += normalized_resid**2 # squared normalized residual
 
-						sum_peak_err_noskip += np.abs(normalized_resid) # normalized residual
-						sum_peak_err_notnorm_noskip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
-
 						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
-							sum_peak_err_notnorm += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+							abs_norm_skip += np.abs(normalized_resid) # normalized residual
 						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
-							sum_peak_err_rss += normalized_resid**2 # squared normalized residual
+							abs_nonorm_skip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+						if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+							squ_norm_skip += normalized_resid**2 # squared normalized residual
 
 					# save parameter values, (output trace indices), fit errors
 					params_toAppend = {}
 					params_toAppend.update(g_syn = syn_strength_i, g_pas = g_pas_i, R_a = R_a_i, 
 									c_m = c_m_i,
-									error_peak = sum_peak_err, error_peak_noskip = sum_peak_err_noskip,
-									error_peak_notnorm = sum_peak_err_notnorm,
-									error_peak_rss = sum_peak_err_rss, 
-									error_peak_notnorm_noskip = sum_peak_err_notnorm_noskip,
-									all_resids_index = len(all_resids))
+									err_abs_norm_skip = abs_norm_skip, err_abs_norm_noskip = abs_norm_noskip,
+									err_abs_nonorm_skip = abs_nonorm_skip,
+									err_squ_norm_skip = squ_norm_skip, 
+									err_squ_norm_noskip = squ_norm_noskip,
+									err_abs_nonorm_noskip = abs_nonorm_noskip)
+					
+					# save overall error summed over all connection for this parameter set
+					err_per_paramset.append(params_toAppend)
+					# save EPSP prediction per connection
+					if sim_per_conn_per_paramset.empty:
+						sim_per_conn_per_paramset = sim_avgs
+					else:
+						sim_per_conn_per_paramset = sim_per_conn_per_paramset.append(sim_avgs)
 
-					# save overall statistics AND residuals per connection for this parameter set
-					sim_params.append(params_toAppend)
-					all_resids.append(sim_avgs) 
+					# update a CSV every 2000 parameters
+					if len(err_per_paramset) % 2000 == 1:
+						pd.DataFrame(err_per_paramset).to_csv('{}_err_per_{}paramsets_temp.csv'.format(datetime.today().strftime("%y-%m-%d"), str(len(err_per_paramset))))
+						sim_per_conn_per_paramset.to_csv('{}_sim_per_conn_{}paramsets_temp.csv'.format(datetime.today().strftime("%y-%m-%d"), str(len(err_per_paramset))))
 
 				#print("finished running " + str(str(round(g_pas_i, 6))) + " S/cm^2")
 
-	sim_params = pd.DataFrame(sim_params)
+	err_per_paramset = pd.DataFrame(err_per_paramset)
 
-	sim_params.to_excel('{}_mcfit_{}.xlsx'.format(date.today().strftime("%y-%m-%d"), str(len(sim_params))))
+	err_per_paramset.to_csv('{}_err_per_{}paramsets.csv'.format(datetime.today().strftime("%y-%m-%d"), str(len(err_per_paramset))))
+	sim_per_conn_per_paramset.to_csv('{}_sim_per_conn_{}paramsets.csv'.format(datetime.today().strftime("%y-%m-%d"), str(len(err_per_paramset))))
 
 	end_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
 	print("start time: {}, end time: {}".format(start_time, end_time))
 
-	return sim_params, all_resids
+	return err_per_paramset, sim_per_conn_per_paramset
+
+def analyze_fits():
+	'''
+		given a csv of errors per parameter set, for 
+		SCv1, SCv2, and MC fits (each fit should use same error types).
+		display for each error type the best param sets across fit types:
+			1) scatter of simulated vs. exp. EPSP peaks across population
+			2) 
+	'''
+
+	# file paths of error per param CSVs, for the different model types
+	err_per_param_csvs = {
+		'SCv1': 'fit_outs//20-12-11_SCv1_err_per_6174paramsets.csv',
+		'SCv2': 'fit_outs//20-12-11_SCv2_err_per_6174paramsets.csv',
+		'MC': 'fit_outs//20-12-15_MC_err_per_9984+9216paramsets_raw.csv'
+		# MC: added 20-12-21 9216 params, 9984 being re-run with slight modified EPSPs
+	}
+
+	# read in error tables
+	err_per_params = {}
+	for model_type, csv in err_per_param_csvs.items():
+		err_per_params[model_type] = pd.read_csv(csv, index_col = False)
+
+	# find the list of error types
+	err_types = [col for col in err_per_params['MC'].columns if 'err' in col]
+
+	# create a sim vs exp EPSP scatter for each error type
+	for err_type in err_types:
+		fig, ax = plt.subplots(nrows = 1, ncols = 1)
+
+		# for each model type, plot scatter of EPSP values
+		for model_type, err_per_param in err_per_params.items():
+			print(f'plotting simulated EPSPs for {model_type}')
+			best_param_set_ind = err_per_param[err_type].idxmin()
+			best_param_set = {}
+			if 'SC' in model_type:
+				best_param_set['g_syn'] = round(err_per_param.iloc[best_param_set_ind]['g_syn'], 3)
+				best_param_set['g_pas'] = round(err_per_param.iloc[best_param_set_ind]['g_pas'], 6)
+				best_param_set['c_m'] = round(err_per_param.iloc[best_param_set_ind]['c_m'], 1)
+
+				sim_traces, sim_avgs, sum_peak_err = find_peak_vals_SC(version = int(model_type[-1]), 
+					gpas = best_param_set['g_pas'], cm = best_param_set['c_m'], gsyn = best_param_set['g_syn'])
+
+				ax.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], s = 3.5,
+							label = f"{model_type}: g_syn={best_param_set['g_syn']} nS, \n"\
+									f"g_pas={best_param_set['g_pas']} S/cm^2, \nc_m={best_param_set['c_m']} \u03BCF/cm^2")
+			elif 'MC' in model_type:
+				best_param_set['g_syn'] = round(err_per_param.iloc[best_param_set_ind]['g_syn'], 6)
+				best_param_set['g_pas'] = round(err_per_param.iloc[best_param_set_ind]['g_pas'], 6)
+				best_param_set['c_m'] = round(err_per_param.iloc[best_param_set_ind]['c_m'], 1)
+				best_param_set['R_a'] = round(err_per_param.iloc[best_param_set_ind]['R_a'], 1)
+
+				sim_traces, sim_avgs, sum_peak_err = find_peak_vals_MC(ra = best_param_set['R_a'],
+					gpas = best_param_set['g_pas'], cm = best_param_set['c_m'], synstrength = best_param_set['g_syn'],
+					params = err_type)
+
+				ax.scatter(sim_avgs.loc[:, 'epsp_exp'], sim_avgs.loc[:, 'epsp_sim'], s = 3.5,
+							label = f"{model_type}: g_syn={round(best_param_set['g_syn']*1000,3)} nS, \n"\
+									f"g_pas={best_param_set['g_pas']} S/cm^2, \nc_m={best_param_set['c_m']} \u03BCF/cm^2, "\
+									f"\nR_a={best_param_set['R_a']} \u03A9m-cm")
+
+		# add axis labels, horizontal line
+		ax.legend(loc = 'center left', prop={'size': 8}, bbox_to_anchor = (1.01, 0.5), borderaxespad = 0)
+		plt.subplots_adjust(right=0.75) # give room to legend on right
+		ax.plot([0, 7], [0, 7], color = 'grey', ls = '--', alpha = 0.5)
+		ax.set_xlabel("experimental EPSP peak (mV)")
+		ax.set_ylabel("simulated EPSP peak (mV)")
+		ax.set_title(f'error type: {err_type}')
+		ax.spines['top'].set_visible(False)
+		ax.spines['right'].set_visible(False)
+
+		plt.savefig(f'fit_comp_{err_type}.png', format = 'png', bbox_inches='tight', dpi = 300)
+		#plt.show()
 
 def shelve_all_resids():
 	toshelve = ['all_resids']
@@ -859,7 +1025,6 @@ def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_thr
 		t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
 
 		toAppend = {}
-		### add measurement of synaptic budget!!!
 		toAppend.update(post_name = target_name, post_id = target_body_id,
 							pre_name = pre_name, pre_id = str(pre_bodyIds)[1:-1],
 							syns = curr_syns, syn_count = len(curr_syns),
@@ -926,7 +1091,7 @@ def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_thr
 
 	return all_conns
 
-def attr_per_conn(target_neuron_file = 'LHN_list_siz_axon_locs.csv', weight_threshold = 10, transf_freq = 20,
+def conn_attrs(target_neuron_file = 'LHN_list_siz_axon_locs.csv', weight_threshold = 3, transf_freq = 20,
 					param_set = 'pop_fit'):
 	'''
 		for each neuron in a list (i.e. a list of LHNs), find information about its
@@ -981,6 +1146,11 @@ def analyze_attrs(n):
 	plt.ylabel('avg. transfer impedance from synapses to SIZ (MOhm)')
 	plt.show()
 
+	# plot connected points for geodesic distance vs Z_c (or perhaps uEPSP/# synapses/budget?)
+	for lhn_id in set(n_pn_out.post_id):
+	    lhn = n_pn_out.query('post_id == @lhn_id')['post_name'].iloc[0]
+	    plt.plot(n_pn_out.query('post_id==@lhn_id')['mean_dist_to_siz'], n_pn_out.query('post_id==@lhn_id')['mean_Zc_to_siz'], label = '{}-{}'.format(lhn, str(lhn_id)))
+
 	# pairplot scatter matrix
 	sub_n = pd.DataFrame(n[['syn_count', 'uEPSP_siz', 'uEPSP_axon', 't_10to90_siz', 'mean_dist_to_siz', 'mean_Zc_to_siz', 'mean_Zi', 'mean_V_ratio']])
 	sns.set_theme(style="ticks")
@@ -1013,6 +1183,9 @@ def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, w
 		weight_threshold = 0: thus, candidate synapse locations can come from a connection type in conn_class
 			with as little as this # of synapses
 
+		TODO: in this class potentially add info on clustering within a connection and relative to other
+				connections within the class
+
 		generate: histogram of possible uEPSP amplitudes for each shuffle, with the baseline
 			uEPSP size marked with a vertical line
 		return: list of simulated uEPSP values at shuffled synapse locations
@@ -1038,17 +1211,45 @@ def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, w
 	cell1.tree = cell1.trace_tree()
 
 	# get number of post-synapses on the target neuron
-	target, r = fetch_neurons(target_body_id)
+	target = None
+	print('finding # of post-synapses')
+	while target is None:
+		try:
+			target, r = fetch_neurons(target_body_id)
+		except:
+			print('server access failure, repeating')
+			pass
 	target_syn_count = target.post[0]
 
 	# identify all potential synaptic sites for connections in class (xyz coordinates)
 	# could consider a Regex search here:
 	# fetch_simple_connections(upstream_criteria = NC(type='.*adPN.*', regex = True), downstream_criteria = target_body_id, min_weight = 0)
-	conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
+	conns = None
+	print('finding names of inputs')
+	while conns is None:
+		try:
+			conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
+		except:
+			print('server access failure, repeating')
+			pass
 	# find names of input neurons which are of the 'to place' input class
-	nrns_in_class = [pre_name for pre_name in list(filter(None, conns.type_pre)) if any(class_marker in pre_name for class_marker in conn_class)]
+	if 'all_dendritic' in conn_class:
+		# add all neuron types which have uEPSP at the SIZ bigger than uEPSP at the axon
+		# equivalent, roughly, to all neuron types with uEPSPs 
+		conn_attrs = pd.read_csv('conn_attrs_all_LHNs_with_smallInputs.csv')
+		conn_attrs = conn_attrs.loc[(conn_attrs['post_name']==target_name) & (conn_attrs['post_id']==target_body_id)]
+		nrns_in_class = []
+		for row_ind in range(conn_attrs.shape[0]):
+			if conn_attrs.iloc[row_ind]['uEPSP_siz'] > conn_attrs.iloc[row_ind]['uEPSP_axon']:
+				nrns_in_class.append(conn_attrs.iloc[row_ind]['pre_name'])
+		print("neurons in the all_dendritic class: {}".format(str(nrns_in_class)))
+	else:
+		# add all neuron types which have 
+		nrns_in_class = [pre_name for pre_name in list(filter(None, conns.type_pre)) if any(class_marker in pre_name for class_marker in conn_class)]
+		print("neurons in the \'to place\' class: {}".format(str(nrns_in_class)))
+
+	# iterate through neuron types in 'to place' class and add their synapse locations
 	potent_syn_locs = pd.DataFrame(columns = ['type_pre', 'bodyId_pre', 'x_post', 'y_post', 'z_post'])
-	print("neurons in the \'to place\' class: {}".format(str(nrns_in_class)))
 	# treat each unique connection type as one:
 	for nrn_name in set(nrns_in_class):
 		# find all body IDs for this presynaptic neuron type
@@ -1056,12 +1257,26 @@ def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, w
 
 		# get all synapse xyz locations for the body IDs in this neuron type (may be just 1 body ID)
 		nrn_syn_count = 0
-		for pre_id in pre_bodyIds:
-			curr_syn_locs = fetch_synapse_connections(source_criteria = pre_id, target_criteria = target_body_id)
-			curr_syn_locs = curr_syn_locs[['bodyId_pre', 'x_post', 'y_post', 'z_post']]
-			curr_syn_locs = curr_syn_locs.assign(type_pre = nrn_name)
-			potent_syn_locs = potent_syn_locs.append(curr_syn_locs)
-			nrn_syn_count += curr_syn_locs.shape[0]
+		curr_syn_locs = None
+		# neuprint sometimes throws 502 server errors, try to catch them:
+		print('retrieving postsynapse locations for {}'.format(nrn_name))
+		num_failures = 0
+		while curr_syn_locs is None:
+			try:
+				curr_syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
+			except:
+				print('server access failure, repeating')
+				num_failures += 1
+				pass
+			if num_failures > 100:
+				break
+		if num_failures > 100:
+			continue
+		curr_syn_locs = curr_syn_locs[['bodyId_pre', 'x_post', 'y_post', 'z_post']]
+		curr_syn_locs = curr_syn_locs.assign(type_pre = nrn_name)
+		potent_syn_locs = potent_syn_locs.append(curr_syn_locs)
+		nrn_syn_count += curr_syn_locs.shape[0]
+
 		print('added pot. syn locs from type {}, {} insts., {} total syns'.format(nrn_name, str(len(pre_bodyIds)), 
 																					str(nrn_syn_count)))
 
@@ -1171,7 +1386,8 @@ def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, w
 							uEPSP_soma = max(list(v_soma))+55)
 			run_attrs.append(toAppend)
 
-			print('permutation {}: uEPSP @ SIZ = {}'.format(str(i), str(toAppend['uEPSP_siz'])))
+			if i % 100 == 1:
+				print('permutation {}: uEPSP @ SIZ = {}'.format(str(i), str(toAppend['uEPSP_siz'])))
 
 			# reset synaptic locations back to their old locations
 			for j in range(len(curr_syns)):
@@ -1221,9 +1437,9 @@ def test_shuffle_count():
 # - for these small inputs, is there something systematic about their Strahler order (i.e. very low)
 #		moreover, are the inputs spread across many distal branches (i.e. not coincidentally low ordered)
 
-def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv', run_count = 750, 
+def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv', run_count = 500, 
 							to_shuffle_weight_threshold = 10, to_place_weight_threshold = 3,
-							to_shuffle_class = ['adPN', 'lPN'], to_place_class = ['adPN', 'lPN', 'vPN']):
+							to_shuffle_class = ['adPN', 'lPN'], to_place_class = ['all_dendritic']):
 	'''
 		NOTE: if running for different to_shuffle or to_place classes, change title of output CSV
 
@@ -1234,6 +1450,8 @@ def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv',
 			using shuffle_syn_locs method
 		params: to_shuffle_class = ['adPN', 'lPN'] for excitatory PNs
 								 = ['adPN', 'lPN', 'vPN'] if including inhibitory PNs
+				to_place_class	 = ['all_dendritic'] then use results of conn_attrs to filter targets by 
+										whether EPSP_SIZ > EPSP_axon, i.e. they are dendritic targeting
 
 		if an input onto the target also happens to have multiple other instances of itself (i.e. sister PNs)
 			synapsing onto the target, its instantiation (i.e. when synapses are added onto the target) will include
@@ -1250,24 +1468,34 @@ def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv',
 	for i in range(nrns.shape[0]):
 		target_name = nrns.iloc[i].lhn
 		target_body_id = nrns.iloc[i].lhn_id
+		if to_place_class == 'all_dendritic' and 'local' in target_name:
+			continue
 		# find input neurons:
-		conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, 
+		conns = None
+		print('preparing to find input neurons for {} {}'.format(target_name, str(target_body_id)))
+		while conns is None:
+			try:
+				conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, 
 											min_weight = to_shuffle_weight_threshold)
+			except:
+				print('server access failure, repeating')
+				pass
 		# filter input neurons by whether they are in to_shuffle_class: 
 		ePN_inputs = [pre for pre in list(filter(None, conns.type_pre)) if any(class_type in pre for class_type in to_shuffle_class)]
 		print(str(ePN_inputs))
 		ePN_inputs = list(set(ePN_inputs)) # treat each input "type" as simultaneously active (i.e. sister PNs)
 		print('# sig. inputs: {}, # rows: {}'.format(str(len(ePN_inputs)), 
 						str(int(np.ceil(len(ePN_inputs)/3)))))
-		# for each input neuron, shuffle its synapses using to_place_class as candidate locations 
+		# for each input neuron, function shuffle its synapses using to_place_class as candidate locations 
 		# returns dictionary w/ keys as input neuron names, values as [base_attrs dictionary, run_attrs dataframe (row per shuffle)]
-		shuffles = shuffle_syn_locs_by_class(input_names = ePN_inputs, run_count = run_count,
+		if len(ePN_inputs) > 0:
+			shuffles = shuffle_syn_locs_by_class(input_names = ePN_inputs, run_count = run_count,
 												target_name = target_name, target_body_id = target_body_id, 
 												siz_sec=nrns.iloc[i].siz_sec, siz_seg = nrns.iloc[i].siz_seg,
 												axon_sec=nrns.iloc[i].axon_sec, axon_seg = nrns.iloc[i].axon_seg,
 												conn_class = to_place_class,
 												weight_threshold = to_place_weight_threshold)
-		if len(ePN_inputs) > 0:
+		
 			plt.rcParams["figure.figsize"] = (6,3)
 			fig, axs = plt.subplots(nrows = int(np.ceil(len(ePN_inputs)/3)), ncols = 3,
 										constrained_layout = True)
@@ -1291,52 +1519,24 @@ def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv',
 
 		all_shuffle_data[(target_name, target_body_id)] = shuffles
 
-	'''
-	if target_id == 542634516:
-		ml9_input_pns = ['DP1m_adPN', 'DM4_adPN', 'VA2_adPN', 'DM1_lPN']
-	elif target_id == 573329304:
-		ml9_input_pns = ['DM4_adPN', 'DM1_lPN']
-	elif target_id == 571666434:
-		ml9_input_pns = ['DP1m_adPN', 'DP1l_adPN', 'DM1_lPN']
-	elif target_id == 640963556:
-		ml9_input_pns = ['DP1m_adPN', 'DM1_lPN']
-
-	shuffle_run = {}
-
-	for pn in ml9_input_pns:
-		b, r = shuffle_syn_locs_by_class(target_body_id = ml9_id, input_name = pn, run_count = run_count)
-		shuffle_run[pn] = [b, r]
-
-	fig, axs = plt.subplots(nrows = 2, ncols = 2)
-	axs = axs.reshape(-1)	# allows us to linearly iterate through subplots
-	i = 0
-	for key, val in shuffle_run.items():
-		axs[i].hist(val[1].uEPSP_siz, bins = 30)
-		axs[i].set_title('shuffle input PN {}'.format(str(key)))
-		axs[i].axvline(val[0]['uEPSP_siz'], color = 'red', linestyle = 'dashed')
-		i += 1
-	axs[0].set_ylabel('frequency')
-	axs[-1].set_xlabel('uEPSP @ SIZ (mV)')
-	plt.show()
-	'''
-
+	# save out some tabular data
 	base_v_shuff_EPSP = []
+	all_shuffles = [[lhn_info, shuffle_info] for lhn_info, shuffle_info in all_shuffle_data.items()]
 	for lhn in all_shuffles:
 		for pn, shuff in lhn[1].items():
-			lhn_name = lhn[0][0]
-			lhn_id = lhn[0][1]
+			lhn_name, lhn_id = lhn[0][0], lhn[0][1]
 			pn_name = pn
 			base_EPSP = shuff[0]['uEPSP_siz']
 			shuff_EPSP_med = np.median(shuff[1].uEPSP_siz)
 			shuff_EPSP_mea = np.mean(shuff[1].uEPSP_siz)
 			shuff_EPSP_std = np.std(shuff[1].uEPSP_siz)
+			syn_count = shuff[0]['syn_count']
+			num_instances = shuff[0]['num_instances']
 			toA = {}
 			toA.update(lhn_name = lhn_name, lhn_id = lhn_id, pn_name = pn_name, base_EPSP = base_EPSP, 
 						shuff_EPSP_med = shuff_EPSP_med, shuff_EPSP_mea = shuff_EPSP_mea, 
-						shuff_EPSP_std = shuff_EPSP_std)
-			syn_count = shuff[0]['syn_count']
-			num_instances = shuff[0]['num_instances']
-			toA.update(syn_count = syn_count, num_instances = num_instances)
+						shuff_EPSP_std = shuff_EPSP_std, 
+						syn_count = syn_count, num_instances = num_instances)
 			base_v_shuff_EPSP.append(toA)
 	base_v_shuff_EPSP = pd.DataFrame(base_v_shuff_EPSP)
 
@@ -1347,13 +1547,66 @@ def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv',
 
 	return all_shuffle_data, base_v_shuff_EPSP
 
-def visualize_inputs(target_name = 'ML9', target_body_id = 542634516, 
-						input_name = 'DP1m_adPN'):
+def analyze_shuffs():
+	'''
+		some code to analyze shuffling EPSPs
+	'''
+
+	b = pd.read_csv('20-12-06_shuff_ePN2ePNiPN_LHN_1000.csv')
+	b_out = b.loc[~b['lhn_name'].str.contains('local')]
+	c = pd.read_csv('20-12-04_shuff_ePN2ePN_LHN_750.csv')
+	c_out = c.loc[~c['lhn_name'].str.contains('local')]
+	# visualize z_scored amount of 
+	#plt.scatter(b_out.syn_count, (b_out.base_EPSP - b_out.shuff_EPSP_med) / b_out.shuff_EPSP_std)
+
+	# plot z-score (and best fit lines) of baseline vs shuffled EPSPs
+	# for ePN to just ePN vs ePN to ePN+iPN on LHONs
+	z= np.polyfit(b_out.syn_count, (b_out.base_EPSP - b_out.shuff_EPSP_med) / b_out.shuff_EPSP_std, 1)
+	p = np.poly1d(z)
+	plt.plot(b_out.syn_count, p(b_out.syn_count), c = 'tab:blue', ls = 'dashed', label = 'target ePN+iPN fit')
+	plt.scatter(b_out.syn_count, (b_out.base_EPSP - b_out.shuff_EPSP_med) / b_out.shuff_EPSP_std, c = 'tab:blue', label = 'target ePN+iPN', s = 2.5)
+
+	z= np.polyfit(c_out.syn_count, (c_out.base_EPSP - c_out.shuff_EPSP_med) / c_out.shuff_EPSP_std, 1)
+	p = np.poly1d(z)
+	plt.plot(c_out.syn_count, p(c_out.syn_count), c = 'tab:orange', ls = 'dashed', label = 'target ePN fit')
+	plt.scatter(c_out.syn_count, (c_out.base_EPSP - c_out.shuff_EPSP_med) / c_out.shuff_EPSP_std, c = 'tab:orange', label = 'target ePN', s = 2.5)
+
+	plt.axhline(2, color = 'red', linestyle = 'dashed')
+	plt.axhline(-2, color = 'red', linestyle = 'dashed')
+
+	plt.legend(loc = 'upper right')
+	plt.xlabel('synapse count')
+	plt.ylabel('z-score of baseline EPSP vs shuffled EPSPs')
+
+def visualize_inputs(target_name = 'L1', target_body_id = 483716037, input_name = 'DM1_lPN'):
 	'''
 		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
 		(potentially pulling from neuprint) for the sake of visualization
 
 		i.e. go to ModelView in the GUI to see the morphology, synapse locations, etc.
+		EX: target_name = 'ML9', target_body_id = 542634516, input_name = 'DP1m_adPN'
+			target_name = 'ML9', target_body_id = 573329304, input_name = 'DM1_lPN'
+			target_name = 'ML9', target_body_id = 573337611, input_name = 'DM1_lPN'
+			target_name = 'L12', target_body_id = 452664348, input_name = 'VA1d_adPN' # 16+7 synapses
+			target_name = 'L12', target_body_id = 421957711, input_name = 'DP1m_adPN'
+			target_name = 'L12', target_body_id = 603681826, input_name = 'DP1m_adPN'
+			target_name = 'L11', target_body_id = 360578457, input_name = 'DM1_lPN' # 18 
+			target_name = 'L11', target_body_id = 297921527, input_name = 'DM1_lPN'
+			target_name = 'L11', target_body_id = 572988605, input_name = 'DM1_lPN'
+			target_name = 'L13', target_body_id = 544007573, input_name = 'VA2_adPN'
+			target_name = 'L13', target_body_id = 793702856, input_name = 'VA2_adPN'
+			target_name = 'L15', target_body_id = 422307542, input_name = 'DC1_adPN'
+			target_name = 'L15', target_body_id = 5813009429, input_name = 'DC1_adPN'
+			target_name = 'V2', target_body_id = 1037510115, input_name = 'VL2a_adPN'
+			target_name = 'ML3', target_body_id = 483017681, input_name = 'VL2p_adPN'
+			target_name = 'ML3', target_body_id = 543321179, input_name = 'VL2p_adPN'
+			target_name = 'ML3', target_body_id = 573683438, input_name = 'VL2p_adPN'
+			target_name = 'CML2', target_body_id = 572988717, input_name = None # NO VA6 synapses
+			target_name = 'ML8', target_body_id = 548872750, input_name = 'DM1_lPN' # synapse between 2 tufts
+			target_name = 'ML8', target_body_id = 5813089504, input_name = 'DM1_lPN'
+			target_name = 'ML8', target_body_id = 571666400, input_name = 'DM1_lPN'
+			target_name = 'L1', target_body_id = 575806223, input_name = 'DM1_lPN'
+			target_name = 'L1', target_body_id = 483716037, input_name = 'DM1_lPN'
 	'''
 	global cell1, curr_syns, netstim, netcons, num
 
@@ -1379,17 +1632,347 @@ def visualize_inputs(target_name = 'ML9', target_body_id = 542634516,
 	target_syn_count = target.post[0]
 
 	# add all input synaptic site locations
-	conns = fetch_simple_connections(upstream_criteria = input_name, downstream_criteria = target_body_id)
-	pre_bodyIds = conns.bodyId_pre
-	syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
-	curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
-	print('adding {} synapses from {} to {}; budget = {}'.format(str(num), input_name, target_name, str(num/target_syn_count)))
+	if input_name:
+		conns = fetch_simple_connections(upstream_criteria = input_name, downstream_criteria = target_body_id)
+		pre_bodyIds = conns.bodyId_pre
+		syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
+		curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
+		print('adding {} synapses from {} to {}; budget = {}'.format(str(num), input_name, target_name, str(num/target_syn_count)))
+		if target_name == 'local5' and target_body_id == 5813105722:
+			# dendrite initial section is axon[195] for un-retraced local5
+			num_in_dendr = 0
+			for syn in curr_syns:
+				if str(syn.get_segment()).partition('(')[0] in [str(val) for val in cell1.axon[195].subtree()]:
+					num_in_dendr += 1
+			print('proportion synapses in dendrite: {}'.format(str(num_in_dendr/num)))
 
 	# access a random section
 	h.load_file('stdrun.hoc')
 	x = h.cvode.active(True)
 	v_siz = h.Vector().record(cell1.axon[0](0.5)._ref_v)
 
+	'''
+	hacky code for visualizing downstream sections of a section X:
+	X = 226
+	m = h.MechanismType(0)
+	m.select('hh')
+	for sec in cell1.axon[X].subtree():
+		m.make(sec=sec)
+
+	then go into Distributed Mech -> Manager -> Homogeneous
+	'''
+
+	return cell1, curr_syns, netstim, netcons, num
+
+def visualize_Z_in(siz_sec):
+	''' plot custom variable within dummy variable
+	'''
+	m = h.MechanismType(0)
+	m.select('var')
+	for sec in h.allsec():
+		m.make(sec=sec)
+	# measure impedance
+	imp = h.Impedance()
+	imp.loc(0.5, sec= cell1.axon[siz_sec])
+	imp.compute(0)
+
+	# assign input impedance to the dummy variable
+	for sec in h.allsec():
+		for seg in sec:
+			seg.zin_var = imp.input(seg)
+	# then open Shape Plot and visualize! can also set it up w pyplot
+
+def analyze_passive_norm():
+	'''
+		code for brainstorming how to visually show passive normalization/
+		the dendritic linearity part of the paper
+	'''
+
+	dendritic_sec = 3 # for ML9 542634516
+
+	### after initializing ML9 using `visualize` code above!
+	### one of the first dendritic sections distal to the SIZ is axon[3]
+	gd, zi, zc, k = [], [], [], []
+	imp = h.Impedance()
+	imp.loc(0.5, sec= cell1.axon[dendritic_sec])
+	imp.compute(0)
+	for sec in cell1.axon[dendritic_sec].subtree():
+		for seg in sec:
+			gd.append(h.distance(cell1.axon[dendritic_sec](0.5), seg))
+			zi.append(imp.input(seg))
+			zc.append(imp.transfer(seg))
+			k.append(imp.ratio(seg))
+	# then can plot any variables against each other, i.e.:
+	plt.scatter(k, [z/max(zi) for z in zi], s = 4, label = 'dendritic segments') # cool inverse relationship
+	plt.plot(np.arange(0.2, 1.05, 0.05), [0.2/x for x in np.arange(0.2, 1.05, 0.05)], color = 'red', ls = 'dashed', label = 'y=0.2/x')
+	plt.legend(loc='upper right')
+	# calculate R^2
+	norm_zi = [z/max(zi) for z in zi]
+	r_ss= sum([(z - 0.2/k[k_ind])**2 for k_ind, z in enumerate(norm_zi)]) # residual sum of squares
+	t_ss = sum([(z - mean(norm_zi))**2 for z in norm_zi])
+	Rsqu = 1 - r_ss/t_ss
+
+def testTimingDiffs(target_name = 'local5', target_body_id = 5813105722,
+					input1 = 'VA6_adPN', input2 = 'VL2a_adPN', 
+					seed_set = 420,
+					plot_loc = 'siz'):
+	'''
+		instantiate a neuron (local5), add 2 inputs (i.e. VA6, VL2a), stimulate these
+			inputs at various time lags and measure relative joint EPSP size at SIZ vs 
+			temporal offset;
+			also time to 80% of max EPSP size vs temporal offset 
+
+		params:
+			input1: 'VA6_adPN'
+			input2: 'VL2a_adPN' or 'simulated_dendritic_input'
+			seed_set: change each time to get different random synapse placements 
+						(I think the random seed carries into method calls)
+			plot_loc: 'soma', 'prox_axon', 'dist_axon', 'prox_dendr', 'siz'
+	'''
+	global cell1, curr_syns1, curr_syns2
+	
+	random.seed(seed_set)
+	if target_name == 'local5' and target_body_id == 5813105722:
+		dendr_init_sec = 195
+
+	# instantiate target (post-synaptic) cell
+	try:
+		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	except:
+		print('no SWC found')
+	# biophysical parameters from our fits
+	R_a = 350
+	c_m = 0.6
+	g_pas = 5.8e-5
+	e_pas = -55 # one parameter left same in both, we used -55 in our fits
+	syn_strength = 5.5e-5 # uS
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+	# get number of post-synapses on the target neuron
+	target, r = fetch_neurons(target_body_id)
+	target_syn_count = target.post[0]
+
+	# add all input1 synaptic site locations
+	conns1 = fetch_simple_connections(upstream_criteria = input1, downstream_criteria = target_body_id)
+	pre_bodyIds1 = conns1.bodyId_pre
+	syn_locs1 = fetch_synapse_connections(source_criteria = pre_bodyIds1, target_criteria = target_body_id)
+	curr_syns1, netstim1, netcons1, num1 = cell1.add_synapses_xyz(xyz_locs = syn_locs1, syn_strength = syn_strength)
+	print('adding {} synapses from {} to {}; budget = {}'.format(str(num1), input1, target_name, str(num1/target_syn_count)))
+	if target_name == 'local5' and target_body_id == 5813105722:
+		# dendrite initial section is axon[195] for un-retraced local5
+		num_in_dendr = 0
+		for syn in curr_syns1:
+			if str(syn.get_segment()).partition('(')[0] in [str(val) for val in cell1.axon[dendr_init_sec].subtree()]:
+				num_in_dendr += 1
+		print('proportion synapses in dendrite: {}'.format(str(num_in_dendr/num1)))
+
+	# add all input2 synaptic site locations
+	if input2 == 'simulated_dendritic_input':
+		print('creating a simulated dendritic connection')
+		### CHANGE: we'll make 75 fake dendritic synapses to correspond to VL2a's synapse count
+		curr_syns2, netstim2, netcons2, num2 = cell1.add_synapses_subtree(sec_for_subtree = dendr_init_sec, 
+																			syn_count = 75,
+																			syn_strength = syn_strength)
+		print('adding {} synapses from {} to {}; budget = {}'.format(str(num2), input2, target_name, str(num2/target_syn_count)))
+		if target_name == 'local5' and target_body_id == 5813105722:
+			# dendrite initial section is axon[195] for un-retraced local5
+			num_in_dendr = 0
+			for syn in curr_syns2:
+				if str(syn.get_segment()).partition('(')[0] in [str(val) for val in cell1.axon[dendr_init_sec].subtree()]:
+					num_in_dendr += 1
+			print('proportion synapses in dendrite: {}'.format(str(num_in_dendr/num2)))
+	else:
+		conns2 = fetch_simple_connections(upstream_criteria = input2, downstream_criteria = target_body_id)
+		pre_bodyIds2 = conns2.bodyId_pre
+		syn_locs2 = fetch_synapse_connections(source_criteria = pre_bodyIds2, target_criteria = target_body_id)
+		curr_syns2, netstim2, netcons2, num2 = cell1.add_synapses_xyz(xyz_locs = syn_locs2, syn_strength = syn_strength)
+		print('adding {} synapses from {} to {}; budget = {}'.format(str(num2), input2, target_name, str(num2/target_syn_count)))
+		if target_name == 'local5' and target_body_id == 5813105722:
+			# dendrite initial section is axon[195] for un-retraced local5
+			num_in_dendr = 0
+			for syn in curr_syns2:
+				if str(syn.get_segment()).partition('(')[0] in [str(val) for val in cell1.axon[dendr_init_sec].subtree()]:
+					num_in_dendr += 1
+			print('proportion synapses in dendrite: {}'.format(str(num_in_dendr/num2)))
+
+	# set recording structures + locations
+	# v: keys are recording locations, values are lists of voltage traces, index is input1 timing
+	# t: list of time traces, index is input1 timing (matches index for v)
+	t = []
+	v = {'soma': [], 'prox_axon': [], 'dist_axon': [], 'prox_dendr': [], 'siz': []}
+	if target_name == 'local5' and target_body_id == 5813105722:
+		measure_locs = [('soma', 93), ('prox_axon', 1003), ('dist_axon', 1429), ('prox_dendr', 197),
+						('siz', 996)] # section corresponding to each 
+
+	# measure individual maximum amplitudes at each measure_loc for linearity analysis:
+	# max amplitude for input1:
+	netstim1.number = 1
+	netstim1.start = 0
+	netstim2.number = 0
+	netstim2.start = 0
+	h.load_file('stdrun.hoc')
+	x = h.cvode.active(True)
+	v_temp = {}
+	for loc, sec in measure_locs:
+		v_temp[loc] = h.Vector().record(cell1.axon[sec](0.5)._ref_v) # voltage trace vectors
+	t_temp = h.Vector().record(h._ref_t)                     # time stamp vector
+	h.finitialize(-55 * mV)
+	h.continuerun(130*ms)
+	max_v, locs = [], []
+	for loc,sec in measure_locs:
+		max_v.append(max(list(v_temp[loc])))
+		locs.append(loc)
+	max_v_per_loc = pd.DataFrame(data = max_v, index = locs, columns = ['input1'])
+	# max amplitude for input2:
+	netstim1.number = 0
+	netstim1.start = 0
+	netstim2.number = 1
+	netstim2.start = 0
+	h.load_file('stdrun.hoc')
+	x = h.cvode.active(True)
+	v_temp = {}
+	for loc, sec in measure_locs:
+		v_temp[loc] = h.Vector().record(cell1.axon[sec](0.5)._ref_v) # voltage trace vectors
+	t_temp = h.Vector().record(h._ref_t)                     # time stamp vector
+	h.finitialize(-55 * mV)
+	h.continuerun(130*ms)
+	max_v, locs = [], []
+	for loc,sec in measure_locs:
+		max_v.append(max(list(v_temp[loc])))
+		locs.append(loc)
+	max_v_per_loc['input2'] = max_v
+
+	# input2 timing is set: 
+	netstim2.number = 1
+	netstim2.start = 50
+
+	# input1 timing varies:
+	print('initiating staggered input activation')
+	for i in np.arange(0,101):
+		netstim1.number = 1
+		netstim1.start = i
+		
+		h.load_file('stdrun.hoc')
+		x = h.cvode.active(True)
+		v_temp = {}
+		for loc, sec in measure_locs:
+			v_temp[loc] = h.Vector().record(cell1.axon[sec](0.5)._ref_v) # voltage trace vectors
+		t_temp = h.Vector().record(h._ref_t)                     # time stamp vector
+		h.finitialize(-55 * mV)
+		h.continuerun(130*ms)
+		t.append(list(t_temp))
+		for loc,sec in measure_locs:
+			v[loc].append(list(v_temp[loc]))
+
+	# plot peak EPSP at plot_loc for different timing
+	plot_peak_EPSP(plot_loc = plot_loc, v = v, t = t, input1 = input1, input2 = input2,
+					max_v_per_loc = max_v_per_loc, netstim2start = netstim2.start)
+
+	return t, v, max_v_per_loc
+
+def plot_peak_EPSP(plot_loc, v, t, input1, input2, max_v_per_loc, netstim2start):
+	fig, ax = plt.subplots(nrows = 1, ncols = 1)
+	ax.plot(np.arange(0,101), [max([val-e_pas for val in trace]) for trace in v[plot_loc]], 
+					label = 'compound EPSP max @ {}'.format(plot_loc))
+	ax.axvline(netstim2start, label = '{} activation time'.format(input2), color = 'red', ls = 'dashed')
+	ax.axhline((max_v_per_loc['input1'][plot_loc]+55) + (max_v_per_loc['input2'][plot_loc]+55),
+					label = 'linear sum of individual EPSPs', color = 'orange', ls = 'dashed')
+
+	# plot example traces
+	ax.plot(t[20], np.array(v[plot_loc][20])-e_pas, label = '{} precedes {} by 30 ms'.format(input1, input2))
+	ax.plot(t[int(netstim2start)], np.array(v[plot_loc][int(netstim2start)])-e_pas, 
+				label = 'simultaneous activation')
+	ax.plot(t[80], np.array(v[plot_loc][80])-e_pas, label = '{} lags {} by 30 ms'.format(input1, input2))
+	ax.legend(loc = 'upper right')
+	ax.set_ylabel("depolarization (mV)")
+	ax.set_xlabel("{} activation time".format(input1, input2))
+	ax.spines["top"].set_visible(False)
+	ax.spines["right"].set_visible(False)
+	plt.show()
+
+def probe_mEPSPs(target_name = 'ML9', target_body_id = 542634516, input_name = 'DP1m_adPN',
+					siz_sec = 569, siz_seg = 0.01,
+					toPlot = True):
+	'''
+		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
+		(potentially pulling from neuprint) and simulate each mEPSP individually, allowing for
+		recording of mEPSP amplitude, kinetics, etc. 			
+	'''
+
+	# Change syn_strength to new fit values!
+	syn_strength = 5.5e-5 # uS
+
+	# instantiate the cell and input synapses of interest
+	cell1, curr_syns, netstim, netcons, num = visualize_inputs(target_name = target_name, 
+												target_body_id = target_body_id, input_name = input_name)
+
+	# first set all synapses to weight 0
+	for i in range(len(list(curr_syns))):
+		netcons.object(i).weight[0] = 0 # uS, peak conductance change
+
+	# sequentially activate all input synapses
+	per_synapse_data = []
+	# re-run mEPSP simulation for each synapse
+	for i in (range(len(list(curr_syns)))):
+
+		# activate a single synapse
+		netcons.object(i).weight[0] = syn_strength
+		if i % 20 == 1:
+			print("activating synapse " + str(i))
+
+		# measure mEPSP for connection at pSIZ 
+		# activate the stim
+		netstim.number = 1
+		h.load_file('stdrun.hoc')
+		x = h.cvode.active(True)
+		v_siz = h.Vector().record(cell1.axon[siz_sec](siz_seg)._ref_v)
+		#v_axon = h.Vector().record(cell1.axon[axon_sec](axon_seg)._ref_v)
+		#v_soma = h.Vector().record(cell1.axon[0](0.5)._ref_v)
+		t = h.Vector().record(h._ref_t)                     				# Time stamp vector
+		h.finitialize(-55 * mV)
+		h.continuerun(40*ms)	# initiate run
+		netstim.number = 0
+		# measure rise time of EPSP at pSIZ
+		t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
+
+		toAppend = {}
+		toAppend.update(synapse_number = i, mEPSP_siz = max(list(v_siz))+55,
+							mEPSP_t10to90_siz = t_10to90_siz,
+							syn_count = len(curr_syns),
+							local_diam = curr_syns.object(i).get_segment().diam,
+							dist_to_siz = h.distance(cell1.axon[siz_sec](siz_seg), curr_syns.object(i).get_segment()))
+		per_synapse_data.append(toAppend)
+
+		# de-activate the synapse
+		netcons.object(i).weight[0] = 0
+	per_synapse_data = pd.DataFrame(per_synapse_data)
+
+	# reset all synapse strengths before other tests:
+	for i in range(len(list(curr_syns))):
+		netcons.object(i).weight[0] = syn_strength # uS, peak conductance change
+
+	if toPlot:
+		fig, axs = plt.subplots(nrows = 2, ncols = 2)
+
+		axs[0,0].scatter(per_synapse_data.dist_to_siz, per_synapse_data.mEPSP_siz)
+		axs[0,0].set_xlabel('distance to SIZ (um)'), axs[0,0].set_ylabel('mEPSP @ SIZ (mV)')
+
+		axs[0,1].scatter(per_synapse_data.local_diam, per_synapse_data.mEPSP_siz)
+		axs[0,1].set_xlabel('local diameter (um)'), axs[0,1].set_ylabel('mEPSP @ SIZ (mV)')
+
+		axs[1,0].scatter(per_synapse_data.dist_to_siz, per_synapse_data.mEPSP_t10to90_siz)
+		axs[1,0].set_xlabel('distance to SIZ (um)'), axs[1,0].set_ylabel('t 10 to 90% peak @ SIZ (ms)')
+
+		axs[1,1].scatter(per_synapse_data.local_diam, per_synapse_data.mEPSP_t10to90_siz)
+		axs[1,1].set_xlabel('local diameter (um)'), axs[1,1].set_ylabel('t 10 to 90% peak @ SIZ (ms)')
+
+		fig.suptitle(f"{input_name} inputs onto {target_name} {target_body_id}")
+
+	return per_synapse_data
 
 def sim_DM1(params = 'Gouwens'):
 	'''
@@ -1506,6 +2089,37 @@ def find_KC_classes():
 
 '''
 Past parameter fits: 
+
+# 20-10-05 tile other portion of g_pas w/ finer granularity of R_a
+# 8 * 4 * 12 * 13 = 4992
+#syn_strength_s = [2.5e-5, 3.0e-5, 3.5e-5, 4.0e-5, 4.5e-5, 5.0e-5, 5.5e-5, 6.0e-5]
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#g_pas_s = np.arange(1.2e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(50, 351, 25) # ohm-cm 
+# ended 20-10-07
+
+# 20-10-01 tile other portion of R_a
+# 8 * 4 * 13 * 6 = 2496
+#syn_strength_s = [2.5e-5, 3.0e-5, 3.5e-5, 4.0e-5, 4.5e-5, 5.0e-5, 5.5e-5, 6.0e-5]
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(75, 351, 50) # ohm-cm 
+# start time: 20-10-01-01:59:30, end time: 20-10-02-12:14:34
+
+# 20-09-27 after refreshing body IDs after Pasha's final revisions, saving all_resids
+# 8 * 4 * 13 * 7 = 2912
+#syn_strength_s = [2.5e-5, 3.0e-5, 3.5e-5, 4.0e-5, 4.5e-5, 5.0e-5, 5.5e-5, 6.0e-5]
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(50, 351, 50) # ohm-cm 
+
+# 20-09-27 after refreshing body IDs after Pasha's final revisions, saving all_resids
+# 8 * 4 * 13 * 7 = 2912
+#syn_strength_s = [2.5e-5, 3.0e-5, 3.5e-5, 4.0e-5, 4.5e-5, 5.0e-5, 5.5e-5, 6.0e-5]
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+#R_a_s = np.arange(50, 351, 50) # ohm-cm 
+# ended 20-09-29
 
 # 20-09-13_broader search range: 
 # 4 x 4 x 12 x 7 = 1344 + 144 from previous search!

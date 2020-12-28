@@ -1,7 +1,8 @@
 
 ### the file containing list of LHN and PN body IDs and EPSP sizes
 ### was 20-08-27_all_conns.csv prior to final body ID refresh on 20-09-26
-conn_file = "20-09-26_all_conns.csv"
+### EPSP value refresh on 20-12-08
+conn_file = "20-12-08_all_conns.csv"
 
 ###
 ### for each unique PN to LHN connection, simulate a single compartment cell
@@ -10,7 +11,7 @@ conn_file = "20-09-26_all_conns.csv"
 import sys
 sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\code\\EManalysis\\LH dendritic computation\\mc_model")
 from run_local5 import *
-plt.rcParams.update({'font.size': 30})
+#plt.rcParams.update({'font.size': 30})
 
 ### directly solving conductance-based differential equation
 ### c_m dV/dt + g_pas (V - V_rest) = I(t)
@@ -82,7 +83,7 @@ def num_syn_scaling():
 # 20-09-29 best fits: 
 # SCv1: 0.00006	0.6	0.0185
 # SCv2: 0.000064 0.6 0.0225
-def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175, 
+def find_peak_vals_SC(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175, 
 					show_plot = False, show_scatter = False, save_excel = False):
 
 	all_conns = pd.read_csv(conn_file)
@@ -160,7 +161,7 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 		#sum_peak_err += normalized_resid**2
 
 	if show_plot:
-		plot_traces(sim_traces, cm, gsyn, gpas, version)
+		plot_traces_SC(sim_traces, cm, gsyn, gpas, version)
 	if save_excel:
 		all_conns.to_excel('{}_scsim_v{}_each_inst.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(version)))
 		sim_avgs.to_excel('{}_scsim_v{}_avgs.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(version)))
@@ -188,7 +189,7 @@ def find_peak_vals(version, gpas = 5e-5, cm = 0.8, gsyn = 0.0175,
 
 	return sim_traces, sim_avgs, sum_peak_err
 
-def plot_traces(sim_traces, cm, gsyn, gpas, version):
+def plot_traces_SC(sim_traces, cm, gsyn, gpas, version):
 
 	plt.rcParams["figure.figsize"] = (9, 7)
 
@@ -271,43 +272,39 @@ def find_error(t1, v1, t2, v2):
 ### vers = 1: same parameters for entire population
 ### vers = 2: parameters vary based on each LHN's surf area
 ###
-def param_search(vers):
+def param_search_SC(vers):
 
 	all_conns = pd.read_csv(conn_file)
 
 	start_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
 
-	# 20-09-26 after refreshing body IDs after Pasha's final revisions, saving all_resids
-	g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.1e-5) # S/cm^2, round to 6 places
+	# 20-12-11 tiny refresh of EPSP amplitudes to max of trace avgs (not avg of max)
+	# 18 * 7 * 49 = 6174
+	syn_strength_s = np.arange(0.01, 0.1, 0.005)  # nS
 	c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
-	syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
+	g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.1e-5) # S/cm^2, round to 6 places
+
+	# 20-12-10 after refreshing EPSP peaks, local6 morphologies -- hopefully first of final
+	# still likely need to tile other part of g_pas
+	# 195 * 7 * 49 = 66885
+	#syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS
+	#c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+	#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.1e-5) # S/cm^2, round to 6 places
+	# v1 fit: start time: 20-12-10-11:01:21, end time: 20-12-10 17:54:52
+	# v2 fit: start time: 20-12-10-17:54:52, end time: 20-12-11 04:54:17
+
+	# 20-09-26 after refreshing body IDs after Pasha's final revisions, saving all_resids
+	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.1e-5) # S/cm^2, round to 6 places
+	#c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+	#syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
 	# v1 fit: start time: 20-09-27-21:04:20, end time: 20-09-28 04:21:23
 	# v2 fit: start time: 20-09-28-04:21:23, end time: 20-09-28 10:37:06
 	# sim_params and all_resids for v1 and v2 saved in '20-09-28_scfits_all_resids.out'
 
-	# 20-09-19 error includes NON-NORMALIZED absolute value of residual summed per connection, skipping local5/vl2a
-	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
-	#c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
-	#syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
-
-	# 20-09-15 error is absolute value of residual summed per connection
-	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
-	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
-
-	# 20-09-10 revert local5 to v1.1 parameter search
-	# 20-09-12 rerun after error changed to average per connection
-	#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.4e-5) # S/cm^2, round to 6 places
-	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
-
-	# 20-09-08 initial parameter search
-	#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
-	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
-	#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
-
-	sim_params = []
-	all_resids = []
+	# different types of errors evaluated (over all connections) per paramater set
+	err_per_paramset = []
+	# EPSP amplitude and kinetics per connection, for each parameter set
+	sim_per_conn_per_paramset = pd.DataFrame()
 
 	# iterate through parameter sets
 	# iterate through all biophysical parameter combinations
@@ -316,60 +313,72 @@ def param_search(vers):
 			for g_pas_i in g_pas_s:
 
 				### following errors skip local5/vl2a
-				sum_peak_err = 0 # sum of absolute values of normalized residuals
-				sum_peak_err_notnorm = 0 # sum of absolute values of non-normalized residuals
-				sum_peak_err_rss = 0 # sum of squares of normalized residuals
+				abs_norm_skip = 0 # sum of absolute values of normalized residuals
+				abs_nonorm_skip = 0 # sum of absolute values of non-normalized residuals
+				squ_norm_skip = 0 # sum of squares of normalized residuals
 				
 				### doesn't skip local5/vl2a
-				sum_peak_err_noskip = 0 # sum of absolute values of normalized residuals
-				sum_peak_err_notnorm_noskip = 0 # sum of absolute values of non-normalized residuals
+				abs_norm_noskip = 0 # sum of absolute values of normalized residuals
+				abs_nonorm_noskip = 0 # sum of absolute values of non-normalized residuals
+				squ_norm_noskip = 0 # sum of squares of normalized residuals
 					
-				sim_traces, sim_avgs, rss_err = find_peak_vals(version = vers, cm = c_m_i, gsyn = syn_strength_i,
+				sim_traces, sim_avgs, rss_err = find_peak_vals_SC(version = vers, cm = c_m_i, gsyn = syn_strength_i,
 													  gpas = g_pas_i, save_excel = False, show_scatter = False)
 
 				for i in range(len(sim_avgs)):
 					normalized_resid = (sim_avgs.loc[i, 'epsp_sim'] - sim_avgs.loc[i, 'epsp_exp']) / sim_avgs.loc[i, 'epsp_exp']
-					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
-						sum_peak_err += np.abs(normalized_resid) # normalized residual
+					
+					abs_norm_noskip += np.abs(normalized_resid) # normalized residual
+					abs_nonorm_noskip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+					squ_norm_noskip += normalized_resid**2 # squared normalized residual
 
-					sum_peak_err_noskip += np.abs(normalized_resid) # normalized residual
-					sum_peak_err_notnorm_noskip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
-
 					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
-						sum_peak_err_notnorm += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+						abs_norm_skip += np.abs(normalized_resid) # normalized residual
 					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
-						sum_peak_err_rss += normalized_resid**2 # squared normalized residual
+						abs_nonorm_skip += np.abs(normalized_resid * sim_avgs.loc[i, 'epsp_exp']) # non-normalized residual
+					if sim_avgs.loc[i, 'lhn'] != 'local5' or sim_avgs.loc[i, 'pn'] != 'VL2a':
+						squ_norm_skip += normalized_resid**2 # squared normalized residual
 					
 				# save parameter values, (output trace indices), fit errors
 				params_toAppend = {}
 				params_toAppend.update(g_syn = syn_strength_i, g_pas = g_pas_i, 
 								c_m = c_m_i,
-								error_peak = sum_peak_err, error_peak_noskip = sum_peak_err_noskip,
-								error_peak_notnorm = sum_peak_err_notnorm,
-								error_peak_rss = sum_peak_err_rss, 
-								error_peak_notnorm_noskip = sum_peak_err_notnorm_noskip,
-								all_resids_index = len(all_resids))
+								err_abs_norm_skip = abs_norm_skip, err_abs_norm_noskip = abs_norm_noskip,
+								err_abs_nonorm_skip = abs_nonorm_skip,
+								err_squ_norm_skip = squ_norm_skip, 
+								err_squ_norm_noskip = squ_norm_noskip,
+								err_abs_nonorm_noskip = abs_nonorm_noskip)
 
 				# save overall statistics AND residuals per connection for this parameter set
-				sim_params.append(params_toAppend)
-				all_resids.append(sim_avgs) 
+				err_per_paramset.append(params_toAppend)
+				# save EPSP prediction per connection
+				if sim_per_conn_per_paramset.empty:
+					sim_per_conn_per_paramset = sim_avgs
+				else:
+					sim_per_conn_per_paramset = sim_per_conn_per_paramset.append(sim_avgs)
+
+				# likely don't need to update CSV every 20k params, bc fit is so fast
+				if len(err_per_paramset) % 20000 == 1:
+					pd.DataFrame(err_per_paramset).to_csv('{}_SCv{}_err_per_{}paramsets_temp.csv'.format(datetime.today().strftime("%y-%m-%d"), str(vers), str(len(err_per_paramset))))
+					sim_per_conn_per_paramset.to_csv('{}_SCv{}_sim_per_conn_{}paramsets_temp.csv'.format(datetime.today().strftime("%y-%m-%d"), str(vers), str(len(err_per_paramset))))
 
 		print("g_syn: finished with " + str(round(syn_strength_i, 5)) + " nS")
 
-	sim_params = pd.DataFrame(sim_params)
+	err_per_paramset = pd.DataFrame(err_per_paramset)
 
 	# plot lowest error trace: 
-	low_err = np.argsort(sim_params["error_peak_notnorm"])[0]
+	#low_err = np.argsort(err_per_paramset["err_abs_nonorm_skip"])[0]
 	#find_peak_vals(version = vers, cm = sim_params.loc[low_err, "c_m"], gsyn = sim_params.loc[low_err, "g_syn"],
 	#				gpas = sim_params.loc[low_err, "g_pas"], save_excel = True, show_scatter = True, show_plot = True)
-	print("lowest error is {}".format(sim_params.loc[low_err, "error_peak_notnorm"]))
+	#print("lowest error is {}".format(err_per_paramset.loc[low_err, "error_peak_notnorm"]))
 
-	#sim_params.to_excel('{}_scfit_v{}_{}.xlsx'.format(datetime.today().strftime("%y-%m-%d"), str(vers), str(len(sim_params))))
+	err_per_paramset.to_csv('{}_SCv{}_err_per_{}paramsets.csv'.format(datetime.today().strftime("%y-%m-%d"), str(vers), str(len(err_per_paramset))))
+	sim_per_conn_per_paramset.to_csv('{}_SCv{}_sim_per_conn_{}paramsets.csv'.format(datetime.today().strftime("%y-%m-%d"), str(vers), str(len(err_per_paramset))))
 
 	end_time = datetime.now().strftime('%y-%m-%d %H:%M:%S')
 	print("start time: {}, end time: {}".format(start_time, end_time))
 
-	return sim_params, all_resids
+	return err_per_paramset, sim_per_conn_per_paramset
 
 # all_resids = second output of the method above, then can execute shelving: 
 '''
@@ -491,6 +500,26 @@ def plot_opt_params(cv):
 #top CV fits: g_syn: 0.017933333333333332 p.m. 0.0005587684871413408
 #across all params: g_syn: 0.051000000000000004 p.m. 0.028145455524235523
 
+# 20-09-19 error includes NON-NORMALIZED absolute value of residual summed per connection, skipping local5/vl2a
+#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
+#c_m_s = np.arange(0.6, 1.21, 0.1) # uF/cm^2
+#syn_strength_s = np.arange(0.0025, 0.1, 0.0005) # nS, explore a broad range
+
+# 20-09-15 error is absolute value of residual summed per connection
+#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.2e-5) # S/cm^2, round to 6 places
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
+
+# 20-09-10 revert local5 to v1.1 parameter search
+# 20-09-12 rerun after error changed to average per connection
+#g_pas_s = np.arange(1.0e-5, 6.5e-5, 0.4e-5) # S/cm^2, round to 6 places
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
+
+# 20-09-08 initial parameter search
+#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+#syn_strength_s = np.arange(0.0025, 0.1, 0.005) # nS, explore a broad range
 
 # 20-09-08 initial runs:
 #sim_params1, sim_params2 = param_search_v1(), param_search_v2()
