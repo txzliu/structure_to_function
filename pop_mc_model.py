@@ -7,6 +7,8 @@ sys.path.append("C:\\Users\\Tony\\Documents\\TonyThings\\Research\\Jeanne Lab\\c
 from run_local5 import *
 from datetime import datetime
 import seaborn as sns
+from matplotlib import cm
+from scipy import stats
 
 # import pop_sc_model to generate EPSP peaks given SC param sets
 from pop_sc_model import *
@@ -766,7 +768,7 @@ def analyze_fits():
 		SCv1, SCv2, and MC fits (each fit should use same error types).
 		display for each error type the best param sets across fit types:
 			1) scatter of simulated vs. exp. EPSP peaks across population
-			2) 
+			2) [TODO] a bar chart of errors per connection
 	'''
 
 	# file paths of error per param CSVs, for the different model types
@@ -1185,7 +1187,7 @@ def shuffle_syn_locs_by_class(target_name = 'ML9', target_body_id = 542634516, w
 
 		TODO: in this class potentially add info on clustering within a connection and relative to other
 				connections within the class
-
+		
 		generate: histogram of possible uEPSP amplitudes for each shuffle, with the baseline
 			uEPSP size marked with a vertical line
 		return: list of simulated uEPSP values at shuffled synapse locations
@@ -1432,11 +1434,37 @@ def test_shuffle_count():
 
 	return shuffle_run
 
+def fig_shuffle_example():
+	'''L1 483716037 example shuffle histogram
+		just has one PN input 
+		NOTE: to plot a different PN-LHN input, chance siz and axon locations'''
+	shuffles = shuffle_syn_locs_by_class(input_names = ['DP1m_adPN'], run_count = 500,
+											target_name = 'L1', target_body_id = 483716037, 
+											siz_sec=10, siz_seg = 0.996269,
+											axon_sec=183, axon_seg = 0.5,
+											conn_class = ['adPN', 'lPN'],
+											weight_threshold = 3)
+
+	fig, axs = plt.subplots(nrows = 1, ncols = 1, constrained_layout = True, figsize = (1.5,1.5))
+	for key, val in shuffles.items():
+		axs.hist(val[1].uEPSP_siz, bins = 30)
+		#axs.set_title('{}, {}s{}i.'.format(str(key), str(val[0]['syn_count']), str(val[0]['num_instances'])))
+		axs.axvline(val[0]['uEPSP_siz'], color = 'red', linestyle = 'dashed', label = 'baseline')
+	axs.set(ylabel = 'frequency', xlabel = 'uEPSP at SIZ (mV)')
+	axs.spines['top'].set_visible(False), axs.spines['right'].set_visible(False)
+	axs.legend(frameon = False, prop = {'size':7},
+				bbox_to_anchor=(0., 1.02, 1., .102), loc='lower left',
+           		ncol=2, mode="expand", borderaxespad=0.)
+	#fig.subplots_adjust(wspace=0, hspace=0)
+	plt.savefig('figs\\example_shuffHist_L1.svg', format = 'svg')
+	#axs.set_title('{}, {}s{}i.'.format(str(key), str(val[0]['syn_count']), str(val[0]['num_instances'])))
+	#plt.suptitle('target: {} {}, s=synapses, i=instances'.format(target_name, str(target_body_id)))
+	return axs, shuffles
+
 # shuffling hypotheses:
 # - is it mainly small inputs that have uEPSPs << mean shuffled uEPSPs? (bc less synapses=more clustering)
 # - for these small inputs, is there something systematic about their Strahler order (i.e. very low)
 #		moreover, are the inputs spread across many distal branches (i.e. not coincidentally low ordered)
-
 def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv', run_count = 500, 
 							to_shuffle_weight_threshold = 10, to_place_weight_threshold = 3,
 							to_shuffle_class = ['adPN', 'lPN'], to_place_class = ['all_dendritic']):
@@ -1452,6 +1480,8 @@ def shuffle_inputs_on_targets(target_neuron_file = 'LHN_list_siz_axon_locs.csv',
 								 = ['adPN', 'lPN', 'vPN'] if including inhibitory PNs
 				to_place_class	 = ['all_dendritic'] then use results of conn_attrs to filter targets by 
 										whether EPSP_SIZ > EPSP_axon, i.e. they are dendritic targeting
+										NOTE: would likely include non-PN inputs
+								 = ['adPN', 'lPN'] to use ePN locations as targets to potentially shuffle to
 
 		if an input onto the target also happens to have multiple other instances of itself (i.e. sister PNs)
 			synapsing onto the target, its instantiation (i.e. when synapses are added onto the target) will include
@@ -1556,6 +1586,13 @@ def analyze_shuffs():
 	b_out = b.loc[~b['lhn_name'].str.contains('local')]
 	c = pd.read_csv('20-12-04_shuff_ePN2ePN_LHN_750.csv')
 	c_out = c.loc[~c['lhn_name'].str.contains('local')]
+
+	# scatter of median shuffled vs baseline
+
+	# read the local5 section Jamie wrote, and all the other things he wrote and sent, incl. the transfer resistance 
+	# thing on slack
+	# start working on that figure
+
 	# visualize z_scored amount of 
 	#plt.scatter(b_out.syn_count, (b_out.base_EPSP - b_out.shuff_EPSP_med) / b_out.shuff_EPSP_std)
 
@@ -1578,13 +1615,28 @@ def analyze_shuffs():
 	plt.xlabel('synapse count')
 	plt.ylabel('z-score of baseline EPSP vs shuffled EPSPs')
 
-def visualize_inputs(target_name = 'L1', target_body_id = 483716037, input_name = 'DM1_lPN'):
+def add_hh(downstream_of):
+	# use to visualize the subtree of a particular section, i.e.
+	# when trying to identify the dendritic proximal section
+	global m
+	m = h.MechanismType(0)
+	m.select('hh')
+	for sec in cell1.axon[downstream_of].subtree():
+		m.make(sec=sec)
+def remove_hh():
+	for sec in h.allsec():
+		m.remove(sec=sec)
+
+def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name = 'VL2a_adPN'):
 	'''
 		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
 		(potentially pulling from neuprint) for the sake of visualization
 
 		i.e. go to ModelView in the GUI to see the morphology, synapse locations, etc.
-		EX: target_name = 'ML9', target_body_id = 542634516, input_name = 'DP1m_adPN'
+		EX: target_name = 'CML2', target_body_id = 572988717, input_name = 'VA6_adPN'
+			target_name = 'CML2', target_body_id = 698180486, input_name = 'VA6_adPN'
+			target_name = 'CML2', target_body_id = 696795331, input_name = 'VA6_adPN'
+			target_name = 'ML9', target_body_id = 542634516, input_name = 'DP1m_adPN'
 			target_name = 'ML9', target_body_id = 573329304, input_name = 'DM1_lPN'
 			target_name = 'ML9', target_body_id = 573337611, input_name = 'DM1_lPN'
 			target_name = 'L12', target_body_id = 452664348, input_name = 'VA1d_adPN' # 16+7 synapses
@@ -1598,6 +1650,10 @@ def visualize_inputs(target_name = 'L1', target_body_id = 483716037, input_name 
 			target_name = 'L15', target_body_id = 422307542, input_name = 'DC1_adPN'
 			target_name = 'L15', target_body_id = 5813009429, input_name = 'DC1_adPN'
 			target_name = 'V2', target_body_id = 1037510115, input_name = 'VL2a_adPN'
+			target_name = 'V2', target_body_id = 5813016204, input_name = 'VL2a_adPN'
+			target_name = 'V2', target_body_id = 852302504, input_name = 'VL2a_adPN'
+			target_name = 'V3', target_body_id = 883338122, input_name = 'VL2a_adPN'
+			target_name = 'V3', target_body_id = 917450071, input_name = 'VL2a_adPN'
 			target_name = 'ML3', target_body_id = 483017681, input_name = 'VL2p_adPN'
 			target_name = 'ML3', target_body_id = 543321179, input_name = 'VL2p_adPN'
 			target_name = 'ML3', target_body_id = 573683438, input_name = 'VL2p_adPN'
@@ -1645,6 +1701,9 @@ def visualize_inputs(target_name = 'L1', target_body_id = 483716037, input_name 
 				if str(syn.get_segment()).partition('(')[0] in [str(val) for val in cell1.axon[195].subtree()]:
 					num_in_dendr += 1
 			print('proportion synapses in dendrite: {}'.format(str(num_in_dendr/num)))
+	else:
+		print('not adding synapses')
+		curr_syns, netstim, netcons, num = None, None, None, None
 
 	# access a random section
 	h.load_file('stdrun.hoc')
@@ -1653,34 +1712,394 @@ def visualize_inputs(target_name = 'L1', target_body_id = 483716037, input_name 
 
 	'''
 	hacky code for visualizing downstream sections of a section X:
-	X = 226
+	X = 2
 	m = h.MechanismType(0)
 	m.select('hh')
 	for sec in cell1.axon[X].subtree():
 		m.make(sec=sec)
 
-	then go into Distributed Mech -> Manager -> Homogeneous
+	then go into Distributed Mech -> Manager -> HomogeneousMech -> hh
 	'''
 
 	return cell1, curr_syns, netstim, netcons, num
 
-def visualize_Z_in(siz_sec):
-	''' plot custom variable within dummy variable
+def visualize_custom_var(prox_sec, custom_var):
+	''' plot custom variable within dummy variable 
+		then can superimpose custom variable onto ShapePlot
+		prox_sec = collect all impedance attrs downstream of this section
+		custom_var = which variable to ShapePlot
+			transfer / ratio / input
 	'''
+	global inps, ratios, transf, gd 	# for plotting
+
 	m = h.MechanismType(0)
 	m.select('var')
 	for sec in h.allsec():
 		m.make(sec=sec)
 	# measure impedance
 	imp = h.Impedance()
-	imp.loc(0.5, sec= cell1.axon[siz_sec])
+	imp.loc(0.5, sec= cell1.axon[prox_sec])
 	imp.compute(0)
 
-	# assign input impedance to the dummy variable
+	# assign custom variable (i.e. input impedance) to the dummy variable
 	for sec in h.allsec():
 		for seg in sec:
-			seg.zin_var = imp.input(seg)
+			seg.zin_var = eval(f'imp.{custom_var}(seg)') # mystery is why zin_var is the attribute (not `var`)
 	# then open Shape Plot and visualize! can also set it up w pyplot
+
+	inps, ratios, transf, gd = [], [], [], []
+	# assign input impedance to the dummy variable
+	for sec in cell1.axon[prox_sec].subtree():
+		for seg in sec:
+			inps.append(imp.input(seg))
+			ratios.append(imp.ratio(seg))
+			gd.append(h.distance(cell1.axon[prox_sec](0.5), seg))
+			transf.append(imp.transfer(seg))
+
+	return inps, ratios, transf, gd
+
+def fig_dendrite_linearity():
+	'''plotting sub-figures for case study of impedance properties'''
+	# fig_5 plot: (dendritic linearity) L1 horizontal plot
+	fig, axs = plt.subplots(1,3, figsize=(6, 1.5), sharey=True)
+	plt.rcParams.update({'font.size': 9})
+	rock = sns.color_palette('rocket_r', as_cmap=True)
+	axs[0].scatter(inps, gd, c=inps, s=1, cmap=rock, vmin=0, vmax = 4000)
+	axs[0].set(xlim=[0,4500], xlabel = 'input resistance (MOhm)', ylabel = 'distance from pSIZ (\u03BCm)')
+	#axs[0].set_xlabel(fontsize = 9), axs[0].set_ylabel(fontsize = 9)
+	axs[1].scatter(ratios, gd, c=ratios, s=1, cmap=rock, vmin=0, vmax=1)
+	axs[1].set(xlim=[0,1], xlabel = 'voltage transfer ratio')
+	axs[2].scatter(transf, gd, c=transf, s=1, cmap=rock, vmin=0, vmax=1700)
+	axs[2].set(xlim=[0,1600], xlabel = 'transfer resistance (MOhm)')
+	for i in range(3):
+	    axs[i].spines["top"].set_visible(False), axs[i].spines["right"].set_visible(False)
+	for ax in [axs[0], axs[1], axs[2]]:
+	    for item in ([ax.title, ax.xaxis.label, ax.yaxis.label] + ax.get_xticklabels() + ax.get_yticklabels()):
+	        item.set_fontsize(9)
+	plt.savefig('L1_dendr_imp_measures.svg', format = 'svg')
+
+def fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
+						i_a, r_a, t_a, g_a,
+						target_name = 'L1', i_range=[0,4000], t_range=[0,1700]):
+	'''
+		fig 5 (dendritic linearity) L1 vertical plot:
+		
+	'''
+	#  run after running visualize_custom_var to collect lists
+	fig, axs = plt.subplots(3,1, figsize=(2, 6), sharex=True)
+	plt.rcParams.update({'font.size': 9})
+	rock = sns.color_palette('rocket_r', as_cmap=True)
+	scatter_size = 0.3
+	axs[0].scatter([-1*g for g in g_d], i_d, c=i_d, s=scatter_size, cmap=rock, vmin=i_range[0], vmax = i_range[1])
+	axs[0].scatter(g_a, i_a, c=i_a, s=scatter_size, cmap=rock, vmin=i_range[0], vmax = i_range[1])
+	axs[0].set(ylim=i_range, ylabel = 'input resistance (M\u03A9)')
+	#axs[0].set_xlabel(fontsize = 9), axs[0].set_ylabel(fontsize = 9)
+	axs[1].scatter([-1*g for g in g_d], r_d, c=r_d, s=scatter_size, cmap=rock, vmin=0, vmax=1)
+	axs[1].scatter(g_a, r_a, c=r_a, s=scatter_size, cmap=rock, vmin=0, vmax=1)
+	axs[1].set(ylim=[0,1], ylabel = 'voltage transfer ratio')
+	axs[2].scatter([-1*g for g in g_d], t_d, c=t_d, s=scatter_size, cmap=rock, vmin=t_range[0], vmax = t_range[1])
+	axs[2].scatter(g_a, t_a, c=t_a, s=scatter_size, cmap=rock, vmin=t_range[0], vmax = t_range[1])
+	axs[2].set(ylim=t_range, ylabel = 'transfer resistance (M\u03A9)', xlabel = 'distance from pSIZ (\u03BCm)')
+	for i in range(3):
+		axs[i].spines["top"].set_visible(False), axs[i].spines["right"].set_visible(False)
+	# this font thing seems to do nothing
+	for ax in [axs[0], axs[1], axs[2]]:
+		for item in [ax.title, ax.xaxis.label, ax.yaxis.label]:
+			item.set_fontsize(9)
+		for item in (ax.get_xticklabels() + ax.get_yticklabels()):
+			item.set_fontsize(8)
+	plt.savefig(f'figs\\{target_name}_imp_props_vs_gd.svg', format = 'svg')
+
+
+def fig_zi_vs_k():
+	# plot z_i vs k for L1:
+	fig, axs = plt.subplots(1,1, figsize=(2, 2))
+	# then can plot any variables against each other, i.e.:
+	axs.scatter(ratios, inps, c=transf, cmap=rock, s=1, vmin=0, vmax=1700)  # color is voltage transfer resistance
+	axs.set(xlabel='voltage transfer ratio', ylabel='input resistance (MOhm)',
+			xlim=[0,1], ylim=[0,7500])
+	# inverse fit:
+	inv_fit = lambda x: 5585 * 0.2/x
+	# calculate R^2
+	r_ss= sum([(z_i - inv_fit(ratios[k_ind]))**2 for k_ind, z_i in enumerate(inps)]) # residual sum of squares
+	mean_inps = mean(inps)
+	t_ss = sum([(z_i - mean_inps)**2 for z_i in inps])
+	Rsqu = 1 - r_ss/t_ss
+	axs.plot(np.arange(0.15, 1.05, 0.05), [inv_fit(x) for x in np.arange(0.15, 1.05, 0.05)], color = 'orange', 
+				ls = 'dashed', label = f'$R^2={{{round(Rsqu,3)}}}$')
+	axs.legend(loc='upper right', frameon = False, prop={'size':7})
+	axs.spines["top"].set_visible(False), axs.spines["right"].set_visible(False)
+	plt.tight_layout()
+	plt.savefig('figs\\L1_Zi_vs_k.eps', format='eps')
+
+def plot_imp_on_dendrites(custom_var = 'transfer', var_min = 0, var_max = 1700):
+	'''plot z_c/z_i/k onto the 2D morphology of a neuron
+		NOTE: change colormap by altering nrn.def file in C:/nrn/lib/
+	'''
+
+	custom_var = 'transfer'
+	var_min = 0
+	var_max = 1700
+
+	custom_var = 'ratio'
+	var_min = 0
+	var_max = 1
+
+	custom_var = 'input'
+	var_min = 0
+	var_max = 4000
+
+	visualize_inputs(target_name = 'L1', target_body_id = 483716037, input_name = None)
+	i_d, r_d, t_d, g_d = visualize_custom_var(prox_sec = 205, custom_var = custom_var) # dendrite 
+	i_a, r_a, t_a, g_a = visualize_custom_var(prox_sec = 11, custom_var = custom_var) # axons
+	ps = h.PlotShape(True)
+	# L1: to orient into hemibrain 'coordinates' (dorsal up, facing brain)
+	# ps.rotate(0,0,0,275*(np.pi/180),-15*(np.pi/180),0)
+	ps.scale(var_min, var_max)
+	ps.variable('zin_var')
+
+	ax = ps.plot(plt, cmap = cm.hsv) # try rainbow colormap
+	plt.show()
+
+	ps = h.PlotShape(True)
+	ps.scale(var_min, var_max)
+	ps.scale(var_min, var_max)
+
+	### passive norm plots for local5
+	custom_var = 'input'
+	visualize_inputs(target_name = 'local5', target_body_id = 5813105722, input_name = None)
+	i_d, r_d, t_d, g_d = visualize_custom_var(prox_sec = 195, custom_var = custom_var) # dendrite 
+	i_a, r_a, t_a, g_a = visualize_custom_var(prox_sec = 996, custom_var = custom_var) # axons
+	fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
+						i_a, r_a, t_a, g_a,
+						target_name = 'local5', i_range=[0,3500], t_range=[0,800])
+	plt.show() # to generate and save the figure
+
+	''' code to print RGB values for magma colormap (close to seaborn's rocket), to plug
+		into a shape.cm file for nrn.def to read
+	rock = sns.color_palette('rocket_r', as_cmap=True)
+	for i in np.arange(0, 1.01, 0.05):
+		rgb = [str(round(val*256)) for val in rock(i)]
+		print('\t'.join(rgb[:3]))
+
+	To generate a vertical standalone colorbar:
+	plt.figure(figsize=(0.1,1))
+	plt.imshow([[0,1]], cmap=sns.color_palette('rocket_r', as_cmap=True))
+	plt.gca().set_visible(False)
+	cax = plt.axes([0.1,0.1,0.05,0.6])
+	plt.colorbar(orientation='vertical', cax=cax)
+
+	plt.figure(figsize=(1,0.1)) # horizontal colorbar
+	plt.imshow([[0,1]], cmap=sns.color_palette('rocket_r', as_cmap=True))
+	plt.gca().set_visible(False)
+	cax = plt.axes([0.1,0.5,0.6,0.05])
+	plt.colorbar(orientation='horizontal', cax=cax)
+	'''
+def plot_dendritic_attrs(target_neuron_file = 'LHN_list_siz_dendr_locs.csv', toPlot = 'zc_v_gd',
+							downsample = False, downsample_by = 12, 
+							align_branch_out = True, save_out = False, fit_line = True):
+	'''
+		across LHNs, plot input resistance vs transfer ratio for dendritic segments
+		we only iterate over dendritic subtrees here, as specified by 'prox_dendr_sec' in the csv
+		
+		toPlot = 'zi_v_k' or 'zc_v_gd'
+		target_neuron_file = 'LHN_list_siz_axon_locs.csv' doesn't include dendritic branch out pts
+															and has fewer neurons (less clutter?)
+		align_branch_out: aligns branch out point to x-axis (geodesic dist)
+		fit_line: fit and plot a straight line to the arbor points
+	'''
+	nrns = pd.read_csv(target_neuron_file)
+
+	iters = 0
+
+	lhns_colormap = {}
+	import matplotlib
+	rainbow = matplotlib.cm.get_cmap('hsv')
+	for i, lhn in enumerate(nrns.lhn.unique()):
+		lhns_colormap[lhn] = rainbow(i * 1/len(nrns.lhn.unique()))
+
+	lhns_plotted = []
+	arbor_fits = []
+	fig, ax = plt.subplots(1, 1, figsize=(2, 2))
+	for i, row in nrns.iterrows():
+		if pd.notna(row['prox_dendr_sec']):
+
+			target_name, target_body_id = row['lhn'], row['lhn_id']
+
+			# capture initial dendritic section, and branch out point of arbor
+			prox_dendr_secs = [int(val) for val in row['prox_dendr_sec'].split(', ')]
+			prox_dendr_segs = [float(val) for val in row['prox_dendr_seg'].split(', ')]
+			dendr_sec, dendr_seg = prox_dendr_secs[0], prox_dendr_segs[0]
+			branchout_sec, branchout_seg = None, None
+			if pd.notna(row['dendr_branch_out_sec']):
+				branchout_sec, branchout_seg = int(row['dendr_branch_out_sec']), row['dendr_branch_out_seg']
+
+			# currently only look into one of the dendritic sections (if multiple arbors)
+			gd, zi, zc, k, branchout_dist = subtree_imp_props(target_name, target_body_id, dendr_sec, dendr_seg,
+												branchout_sec, branchout_seg)
+			if not branchout_dist:
+				branchout_dist = 0
+			# add code to realign zc_v_gd plots to the dendritic branch out points
+			if align_branch_out and toPlot=='zc_v_gd':
+				gd = [val-branchout_dist for val in gd]
+
+			# fit a straight line to the dendritic arbor for zc_v_gd
+			if toPlot=='zc_v_gd' and fit_line:
+				gd_arbor = [g for g in gd if g > 0]
+				zc_arbor = [z for ind, z in enumerate(zc) if gd[ind] > 0]
+				arbor_fit = stats.linregress(gd_arbor, zc_arbor)
+				toAppend = {'lhn': target_name, 'lhn_id': target_body_id, 
+								'fit_type': 'arbor',
+								'slope': arbor_fit.slope, 'intercept': arbor_fit.intercept,
+								'r^2': arbor_fit.rvalue**2}
+				arbor_fits.append(toAppend)
+				# dendritic initial section
+				gd_dis = [g for g in gd if g < 0]
+				zc_dis = [z for ind, z in enumerate(zc) if gd[ind] < 0]
+				if len(gd_dis)>0:
+					DIS_fit = stats.linregress(gd_dis, zc_dis)
+					toAppend = {'lhn': target_name, 'lhn_id': target_body_id, 
+									'fit_type': 'DIS',
+									'slope': DIS_fit.slope, 'intercept': DIS_fit.intercept,
+									'r^2': DIS_fit.rvalue**2}
+					arbor_fits.append(toAppend)
+				#coeffs = np.polyfit(gd_arbor, zc_arbor, 1)
+				#arbor_fit = np.poly1d(coeffs)
+			
+			if downsample:
+				ds_len = int(np.floor(len(gd)/downsample_by)) # length of downsampled lists
+				ds_idxs = random.sample(range(len(gd)), ds_len)
+				# TODO: create a loop for this:
+				gd = [val for i, val in enumerate(gd) if i in ds_idxs]
+				zi = [val for i, val in enumerate(zi) if i in ds_idxs]
+				zc = [val for i, val in enumerate(zc) if i in ds_idxs]
+				k = [val for i, val in enumerate(k) if i in ds_idxs]
+			if target_name not in lhns_plotted or target_body_id == 483716037:
+				if toPlot=='zi_v_k':
+					pts = ax.scatter(k, zi, s=1, alpha= 0.2, color=lhns_colormap[target_name],
+								 label = target_name)
+				elif toPlot=='zc_v_gd':
+					#pts = ax.scatter(gd, zc, s=1, alpha= 0.2, color=lhns_colormap[target_name],
+				#				 label = target_name)
+					plt.plot(range(180), arbor_fit.intercept + range(180)*arbor_fit.slope, 
+									color=lhns_colormap[target_name], linestyle = 'dashed', alpha=0.5,
+									lw = 1)
+					if len(gd_dis)>0:
+						plt.plot(range(-80,0), DIS_fit.intercept + range(-80,0)*DIS_fit.slope,
+									color=lhns_colormap[target_name], linestyle = 'dashed', alpha=0.5,
+									lw = 1)
+
+				lhns_plotted.append(target_name)
+			else:
+				if toPlot=='zi_v_k':
+					ax.scatter(k, zi, s=1, alpha = 0.2, color = lhns_colormap[target_name])
+				elif toPlot=='zc_v_gd':
+					#ax.scatter(gd, zc, s=1, alpha = 0.2, color = lhns_colormap[target_name])
+					plt.plot(range(180), arbor_fit.intercept + range(180)*arbor_fit.slope, 
+								color=lhns_colormap[target_name], linestyle = 'dashed', alpha=0.5,
+								lw = 1)
+					if len(gd_dis)>0:
+						plt.plot(range(-80,0), DIS_fit.intercept + range(-80,0)*DIS_fit.slope,
+									color=lhns_colormap[target_name], linestyle = 'dashed', alpha=0.5,
+									lw = 1)
+
+			iters += 1
+			#if iters > 4: break
+	arbor_fits = pd.DataFrame(arbor_fits)
+
+	if toPlot=='zi_v_k':
+		ax.set(xlabel='voltage transfer ratio', ylabel='input resistance (MOhm)', xlim=[0,1], ylim=[0,7500])
+	elif toPlot=='zc_v_gd':
+		if align_branch_out: xlab = 'distance from branch out point (\u03BCm)'
+		else: xlab = 'distance from pSIZ (\u03BCm)'
+		ax.set(xlabel=xlab, ylabel='transfer resistance (MOhm)', ylim=[0,1800])
+		if align_branch_out: ax.axvline(0, color = 'grey', ls = 'dashed', alpha = 0.2)
+	lgnd = ax.legend(loc = 'center left', prop={'size':7}, ncol = 1, frameon=False, bbox_to_anchor = (1.01, 0.5),
+						borderaxespad = 0)
+	for handle in lgnd.legendHandles:
+		handle.set_sizes([6.0]) # increase size of points in legend
+	ax.spines["top"].set_visible(False), ax.spines["right"].set_visible(False)
+	plt.subplots_adjust(right=0.9) # give room to legend on right
+	
+	if save_out:
+		if toPlot=='zi_v_k':
+			#plt.savefig('figs\\allLHNs_Zi_vs_k.jpg', format = 'jpg', bbox_inches='tight', dpi = 500)
+			plt.savefig('figs\\allLHNs_Zi_vs_k.svg', format='svg')
+		elif toPlot=='zc_v_gd':
+			plt.savefig('figs\\allLHNs_Zc_vs_gd.svg', format='svg')
+			#plt.savefig('figs\\allLHNs_Zc_vs_gd.jpg', format = 'jpg', bbox_inches='tight', dpi = 500)
+
+	return arbor_fits
+
+def analyze_arbor_fits(arbor_fits):
+
+	lhns_colormap = {}
+	import matplotlib
+	rainbow = matplotlib.cm.get_cmap('hsv')
+	for i, lhn in enumerate(arbor_fits.lhn.unique()):
+		lhns_colormap[lhn] = rainbow(i * 1/len(arbor_fits.lhn.unique()))
+
+	fig, ax = plt.subplots(1,1)
+	for name, sub in arbor_fits.groupby('lhn'):
+		ax.scatter(sub['slope'], sub['r^2'], label = name, color = lhns_colormap[name])
+	ax.legend()
+
+	#boxplot
+	sns.boxplot(x='lhn', y='slope', data=f)
+
+	#compare DIS vs arbor fits
+	plt.hist(arbor_fits.loc[arbor_fits['fit_type']=='arbor']['slope'], label = 'arbor fit', alpha = 0.3, bins = 10)
+	plt.hist(arbor_fits.loc[arbor_fits['fit_type']=='DIS']['slope'], label = 'dendritic initial section fit', alpha=0.3, bins=10)
+	plt.legend()
+	plt.xlabel('slope')
+	plt.hist(arbor_fits.loc[arbor_fits['fit_type']=='arbor']['r^2'], label = 'arbor fit', alpha = 0.3, bins = 10)
+	plt.hist(arbor_fits.loc[arbor_fits['fit_type']=='DIS']['r^2'], label = 'dendritic initial section fit', alpha=0.3, bins=10)
+	plt.legend()
+	plt.xlabel('r^2')
+
+def subtree_imp_props(target_name, target_body_id, dendr_sec, dendr_seg,
+						branchout_sec, branchout_seg):
+	'''given an LHN and a proximal dendritic section and segment, 
+		measure the impedance properties of that section's subtree, 
+		referenced to that section'''
+
+	# biophysical parameters from our fits (NEEDS UPDATING)
+	R_a = 350
+	c_m = 0.6
+	g_pas = 5.8e-5
+	e_pas = -55 # one parameter left same in both, we used -55 in our fits
+	syn_strength = 5.5e-5 # uS
+	# instantiate target (post-synaptic) cell
+	try:
+		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	except:
+		print('no SWC found')
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+
+	print(target_name)	
+	gd, zi, zc, k = [], [], [], [] # collect impedance measures for all dendritic segments
+	branchout_dist = None
+	imp = h.Impedance()
+	imp.loc(dendr_seg, sec= cell1.axon[dendr_sec])
+	imp.compute(0)
+	for sec in cell1.axon[dendr_sec].subtree():
+		for seg in sec:
+			#try:
+			gd.append(h.distance(cell1.axon[dendr_sec](dendr_seg), seg))
+			zi.append(imp.input(seg))
+			zc.append(imp.transfer(seg))
+			k.append(imp.ratio(seg))
+			# identify branch_out point (seg w/in 3 um of branchout):
+			if branchout_sec and branchout_seg: # check if values are in spreadsheet
+				if h.distance(cell1.axon[branchout_sec](branchout_seg), seg) < 3 and not branchout_dist:
+					branchout_dist = gd[len(gd)-1]
+			#except:
+			#	print('error in evaluating impedance properties')
+
+	return gd, zi, zc, k, branchout_dist
 
 def analyze_passive_norm():
 	'''
@@ -1711,6 +2130,27 @@ def analyze_passive_norm():
 	r_ss= sum([(z - 0.2/k[k_ind])**2 for k_ind, z in enumerate(norm_zi)]) # residual sum of squares
 	t_ss = sum([(z - mean(norm_zi))**2 for z in norm_zi])
 	Rsqu = 1 - r_ss/t_ss
+
+def probe_len_thick_AIS(target_neuron='local5', ):
+	'''
+		given a neuron and its axon initial section (local5 or local6) and one input
+		targeting the axon and one targeting the dendrite, 
+		produce a heatmap of the effect on the difference between axon and dendrite targeting
+		uEPSPs, under the influence of thickening and shortening 
+
+		for each combination of thicken and shorten, run a sub-method which produces the 
+			EPSP sizes of VL2a and VA6
+	'''
+
+	### passive norm plots for local5
+	custom_var = 'input'
+	visualize_inputs(target_name = 'local5', target_body_id = 5813105722, input_name = None)
+	i_d, r_d, t_d, g_d = visualize_custom_var(prox_sec = 195, custom_var = custom_var) # dendrite 
+	i_a, r_a, t_a, g_a = visualize_custom_var(prox_sec = 996, custom_var = custom_var) # axons
+	fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
+						i_a, r_a, t_a, g_a,
+						target_name = 'local5', i_range=[0,3500], t_range=[0,800])
+	plt.show() # to generate and save the figure
 
 def testTimingDiffs(target_name = 'local5', target_body_id = 5813105722,
 					input1 = 'VA6_adPN', input2 = 'VL2a_adPN', 
