@@ -85,6 +85,14 @@ class Cell():
 		for sec in self.axon:
 			num_segs = sec.n3d()
 			sec_index = re.split('\[|\]', sec.name())[3]
+			'''
+			for seg in sec:
+				loc = seg.x
+				toAppend = {}
+				toAppend.update(sec=sec_index, i3d=i, 
+								x=loc, y=sec.y3d(i), z=sec.z3d(i), 
+								arc=sec.arc3d(i), gd = geodesic_dist)
+			'''
 			for i in range(num_segs):
 				toAppend = {} 	# each row to add is a dictionary
 				loc = sec.arc3d(i) / sec.L
@@ -762,6 +770,142 @@ def param_search_MC(conn_file = "20-12-08_all_conns.csv"):
 
 	return err_per_paramset, sim_per_conn_per_paramset
 
+def update_sim_per_conn(sim_per_conn_path = 'fit_outs\\20-12-27_MC_sim_per_conn_9216+9984.csv',
+						modified_targets = ['local6', 'V2'],
+						conn_file = "20-12-08_all_conns.csv"):
+	''' given a few modified SWCs for postsynaptic cells, re-run a partial set of body IDs for ALL params and 
+		update the sim_per_conn spreadsheet, then generate new best params
+	'''
+
+	all_conns = pd.read_csv(conn_file)
+	prev_sim_per_conn = pd.read_csv(sim_per_conn_path)
+
+	start_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
+
+	e_pas_i = -55 # mV
+
+	syn_strength_s = [2.5e-5]
+	c_m_s = [0.6]
+	g_pas_s = [1.2e-5] # S/cm^2, round to 6 places
+	R_a_s = [75] # ohm-cm 
+
+	# 20-12-08 after refreshing EPSP peaks, local6 morphologies -- hopefully first of final
+	# still likely need to tile other part of g_pas
+	# 12 * 4 * 13 * 16 = 9984
+	#syn_strength_s = np.arange(2.5e-5, 8.1e-5, 0.5e-5)
+	#c_m_s = np.arange(0.6, 1.21, 0.2) # uF/cm^2
+	#g_pas_s = np.arange(1.0e-5, 5.9e-5, 0.4e-5) # S/cm^2, round to 6 places
+	#R_a_s = np.arange(75, 451, 25) # ohm-cm 
+
+	# different types of errors evaluated (over all connections) per paramater set
+	err_per_paramset = []
+	# EPSP amplitude and kinetics per connection, for each parameter set
+	sim_per_conn_per_paramset = pd.DataFrame()
+
+	param_iter = 0
+	# iterate through all biophysical parameter combinations
+	for syn_strength_i in syn_strength_s:
+		for c_m_i in c_m_s:
+			for g_pas_i in g_pas_s:
+				for R_a_i in R_a_s:
+
+					# only simulate peaks for target cell body IDs in modified_cells
+					for cell_type in modified_targets:
+						cell_ids = [cell_id for cell_name, cell_id in zip(all_conns.lhn, all_conns.lhn_id) 
+											if cell_type in cell_name]
+
+						# find PNs giving input to the LHN
+						input_type_ids = all_conns.loc[all_conns.lhn == cell_type][['pn', 'pn_id']].drop_duplicates()
+
+						# iterate through inputs onto the LHN (may only be 1)
+						for i, type_id_row in input_type_ids.iterrows(): 
+							input_type, input_id = type_id_row['pn'], type_id_row['pn_id']
+							print(cell_type, input_type)
+							print(all_conns.loc[(all_conns.lhn == cell_type) & \
+										(all_conns.pn == input_type), 'epsp_exp'])
+							epsp_exp = all_conns.loc[(all_conns.lhn == cell_type) & \
+										(all_conns.pn == input_type), 'epsp_exp'].iloc[0] # all EPSPs for a conn equal
+
+							uEPSP_outputs = []
+							for cell_id in cell_ids: 
+								# simulate the EPSP, kinetics for each target body ID and the corresponding input
+								uEPSP_output = sim_uEPSP(target = cell_type, target_id = cell_id, 
+														 upstream = input_type, upstream_id = input_id,
+														 R_a = R_a_i, c_m = c_m_i, g_pas = g_pas_i, 
+														 e_pas = e_pas_i, syn_strength = syn_strength_i)
+								uEPSP_outputs.append(uEPSP_output)
+							uEPSP_outputs = pd.DataFrame(uEPSP_outputs)
+
+							epsp_sim, t_sim_10to90, t_sim_0to80 = mean(uEPSP_outputs.EPSP_sim), \
+											mean(uEPSP_outputs.t_sim_10to90), mean(uEPSP_outputs.t_sim_0to80)
+							resid, norm_resid = epsp_sim - epsp_exp, (epsp_sim - epsp_exp) / epsp_exp
+
+							print('uEPSP amp: ', [epsp_sim, t_sim_10to90, t_sim_0to80, resid, norm_resid])
+							# find appropriate row to update in MC_sim_per_conn
+							prev_sim_per_conn.loc[(prev_sim_per_conn.R_a==R_a_i) & (prev_sim_per_conn.g_pas==g_pas_i) \
+								& (prev_sim_per_conn.c_m==c_m_i) & (prev_sim_per_conn.syn_strength==syn_strength_i) \
+								& (prev_sim_per_conn.lhn==cell_type) & (prev_sim_per_conn.pn==input_type), \
+								['epsp_sim', 't_sim_10to90', 't_sim_0to80', 'resid', 'norm_resid']] \
+								= [epsp_sim, t_sim_10to90, t_sim_0to80, resid, norm_resid]
+
+					param_iter += 1
+
+					if param_iter % 2000 == 1:
+						prev_sim_per_conn.to_csv(f'{datetime.today().strftime("%y-%m-%d")}_sim_per_conn_{param_iter}paramsets_temp.csv')
+
+	prev_sim_per_conn.to_csv(f'{datetime.today().strftime("%y-%m-%d")}_sim_per_conn_newlocal6_V2_{param_iter}.csv')	
+
+	end_time = datetime.now().strftime('%y-%m-%d-%H:%M:%S')
+	print("start time: {}, end time: {}".format(start_time, end_time))
+	
+	return err_per_paramset, sim_per_conn_per_paramset
+
+def sim_uEPSP(target, target_id, upstream, upstream_id,
+				R_a, c_m, g_pas, e_pas, syn_strength):
+	'''	return uEPSP attributes given a target (postsynaptic) and upstream (presynaptic) cell
+	'''
+	swc_path = "swc\\{}-{}.swc".format(target, str(target_id))
+	syn_path = "syn_locs\\{}-{}_{}-{}.csv".format(target, str(target_id), upstream, str(upstream_id))
+
+	cell1 = Cell(swc_path, 0) # first argument is name of swc file, second is a gid'
+	cell1.discretize_sections()
+	cell1.add_biophysics(R_a, c_m, g_pas, e_pas) # ra, cm, gpas, epas
+	cell1.tree = cell1.trace_tree()
+	synapses, netstim, netcons, num_syn = cell1.add_synapses(syn_path, syn_strength)
+
+	surf_area = cell1.surf_area()
+
+	if num_syn > 0:
+		netstim.number = 1
+		netstim.start = 0
+
+		# activate synapses
+		h.load_file('stdrun.hoc')
+		x = h.cvode.active(True)
+		v_trace_soma = h.Vector().record(cell1.axon[0](0.5)._ref_v) 		# soma membrane potential
+		#v_z = h.Vector().record(p_siz(siz_loc)._ref_v)		# putative SIZ membrane potential
+		t_trace = h.Vector().record(h._ref_t)                     # Time stamp vector
+		h.finitialize(-55 * mV)
+		h.continuerun(40*ms)
+		
+		EPSP_sim = float(max(v_trace_soma)+55)
+
+		# KINETICS:
+		# time from 10 to 90% peak:
+		t_10to90 = time_to_percent_peak(t_trace, v_trace_soma, 0.90) - time_to_percent_peak(t_trace, v_trace_soma, 0.10)
+		# time from 0.1 to 80% peak:
+		t_0to80 = time_to_percent_peak(t_trace, v_trace_soma, 0.80) - time_to_percent_peak(t_trace, v_trace_soma, 0.0001)
+
+		# TODO: track average transfer impedance to SIZ and average geodesic distance to SIZ
+		# perhaps also the stdevs of above
+	else:
+		EPSP_sim, t_trace, v_trace_soma = 0, [0, 20], [-55, -55]
+		t_10to90, t_0to80 = None, None
+
+	uEPSP_output = {'EPSP_sim': EPSP_sim, 'num_syn': num_syn, 't_sim_10to90': t_10to90, 
+					't_sim_0to80': t_0to80, 't_trace': t_trace, 'v_trace_soma': v_trace_soma}
+	return uEPSP_output
+
 def analyze_fits():
 	'''
 		given a csv of errors per parameter set, for 
@@ -980,8 +1124,11 @@ def find_input_attrs(target_name = 'ML9', target_body_id = 542634516, weight_thr
 	conns = fetch_simple_connections(upstream_criteria = None, downstream_criteria = target_body_id, min_weight = weight_threshold)
 	
 	# get number of post-synapses on the target neuron
-	target, r = fetch_neurons(target_body_id)
-	target_syn_count = target.post[0]
+	try:
+		target, r = fetch_neurons(target_body_id)
+		target_syn_count = target.post[0]
+	except:
+		print('likely no internet connection')
 
 	### instantiate synapses for each connection with weight > threshold
 	all_conns = []
@@ -1618,6 +1765,7 @@ def analyze_shuffs():
 def add_hh(downstream_of):
 	# use to visualize the subtree of a particular section, i.e.
 	# when trying to identify the dendritic proximal section
+	# then go into Distributed Mech -> Manager -> HomogeneousMech -> hh
 	global m
 	m = h.MechanismType(0)
 	m.select('hh')
@@ -1627,7 +1775,57 @@ def remove_hh():
 	for sec in h.allsec():
 		m.remove(sec=sec)
 
-def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name = 'VL2a_adPN'):
+def assign_LHLN_branch_points():
+	'''read in Jamie's labelled Point Nodes and map onto NEURON swc nodes'''
+
+	JJ_labels = pd.read_csv('axonDendriteNodes LHLN 20210112.csv')
+
+	lhn_branch_points = {}	
+	for i, row in JJ_labels.iterrows():
+		if not pd.isna(row['axon start']):
+			name, body_id = row['target_name'], row['target_body_id']
+			a, d, a_1, d_1 = row['axon start'], row['dendrite start'], row['axon first branch'], row['dendrite first branch']
+
+			lhn_branch_points[(name, body_id)] = assign_SWC_PointNo_to_NEURON_tree(target_name = name, 
+													target_body_id = body_id, nodes_to_map = [d,d_1,a,a_1])
+
+	# dictionary: key -- (lhln name, lhln id), value -- list of lists, each contained 
+	# list structure -- [node id, section, segment]; dendrite, dendrite branch out, axon, axon branch out
+	return lhn_branch_points
+
+def assign_SWC_PointNo_to_NEURON_tree(target_name = 'local6', target_body_id = 417186656,
+									nodes_to_map = [241,1737,341,1745]):
+
+	try:
+		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
+	except:
+		print('no SWC found')
+
+	# get swc text file
+	headers = ['PointNo', 'Label', 'X', 'Y', 'Z', 'Radius', 'Parent']
+	raw_swc = pd.read_csv(swc_path, sep=' ', skiprows=4, names=headers)
+
+	# instantiate NEURON cell object
+	cell1, curr_syns, netstim, netcons, num = visualize_inputs(target_name=target_name, target_body_id=target_body_id)
+
+	# map rows from text file to section+segments in NEURON object
+	tree_coords = cell1.tree.loc[:, 'x':'z']
+	nbrs = NearestNeighbors(n_neighbors=1, algorithm='auto').fit(tree_coords)
+	pointno_to_sec = [] # values of [PointNo, NEURON section, NEURON segment]
+	for node in nodes_to_map:
+		node_coords = raw_swc.loc[raw_swc.PointNo==node][['X','Y','Z']]
+		distances, indices = nbrs.kneighbors(node_coords)	# index is closest row in cell1.tree to PointNo
+		node_section = int(cell1.tree.iloc[indices[0][0]]['sec'])
+		node_i3d = int(cell1.tree.iloc[indices[0][0]]['i3d'])
+		node_segment = cell1.axon[node_section].arc3d(node_i3d) / cell1.axon[node_section].L
+		print(f'PointNo {str(node)} maps to section {str(node_section)} w/ dist {str(distances[0][0])}')
+		
+		pointno_to_sec.append([node, node_section, node_segment])
+
+	return pointno_to_sec
+
+def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name = None,
+						syn_locs = None):
 	'''
 		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
 		(potentially pulling from neuprint) for the sake of visualization
@@ -1666,6 +1864,8 @@ def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name 
 	'''
 	global cell1, curr_syns, netstim, netcons, num
 
+	print(f'importing {target_name} {target_body_id}')
+
 	# instantiate target (post-synaptic) cell
 	try:
 		swc_path = "swc\\{}-{}.swc".format(target_name, str(target_body_id))
@@ -1684,14 +1884,20 @@ def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name 
 	cell1.tree = cell1.trace_tree()
 
 	# get number of post-synapses on the target neuron
-	target, r = fetch_neurons(target_body_id)
-	target_syn_count = target.post[0]
+	try:
+		target, r = fetch_neurons(target_body_id)
+		target_syn_count = target.post[0]
+	except:
+		print('likely no internet connection')
 
 	# add all input synaptic site locations
 	if input_name:
-		conns = fetch_simple_connections(upstream_criteria = input_name, downstream_criteria = target_body_id)
-		pre_bodyIds = conns.bodyId_pre
-		syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
+		if not syn_locs.empty:
+			pass # synapse locs are pre-loaded
+		else:
+			conns = fetch_simple_connections(upstream_criteria = input_name, downstream_criteria = target_body_id)
+			pre_bodyIds = conns.bodyId_pre
+			syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
 		curr_syns, netstim, netcons, num = cell1.add_synapses_xyz(xyz_locs = syn_locs, syn_strength = syn_strength)
 		print('adding {} synapses from {} to {}; budget = {}'.format(str(num), input_name, target_name, str(num/target_syn_count)))
 		if target_name == 'local5' and target_body_id == 5813105722:
@@ -1709,17 +1915,6 @@ def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name 
 	h.load_file('stdrun.hoc')
 	x = h.cvode.active(True)
 	v_siz = h.Vector().record(cell1.axon[0](0.5)._ref_v)
-
-	'''
-	hacky code for visualizing downstream sections of a section X:
-	X = 2
-	m = h.MechanismType(0)
-	m.select('hh')
-	for sec in cell1.axon[X].subtree():
-		m.make(sec=sec)
-
-	then go into Distributed Mech -> Manager -> HomogeneousMech -> hh
-	'''
 
 	return cell1, curr_syns, netstim, netcons, num
 
@@ -1778,6 +1973,31 @@ def fig_dendrite_linearity():
 	        item.set_fontsize(9)
 	plt.savefig('L1_dendr_imp_measures.svg', format = 'svg')
 
+def fig_local5_linearity():
+	### passive norm plots for local5
+	custom_var = 'input'
+	#visualize_inputs(target_name = 'local5', target_body_id = 5813105722, input_name = None)
+	# visualize_custom_var returns inps, ratios, transf, gd
+	i_d, r_d, t_d, g_d = visualize_custom_var(prox_sec = 195, custom_var = custom_var) # dendrite 
+	i_a, r_a, t_a, g_a = visualize_custom_var(prox_sec = 996, custom_var = custom_var) # axons
+	#fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
+	#					i_a, r_a, t_a, g_a,
+	#					target_name = 'local5', i_range=[0,3500], t_range=[0,800])
+	#plt.show() # to generate and save the figure
+
+	g_d, i_d, t_d, r_d, branchout_dist_d = subtree_imp_props(target_name, target_body_id, 195, 0.327,
+												940, 0)
+	g_a, i_a, t_a, r_a, branchout_dist_a = subtree_imp_props(target_name, target_body_id, 996, 0,
+												1003, 0)
+
+	### TODO: fit lines to local5
+
+	fig, axs = plt.subplots(1,1)
+	axs.scatter([-1*g for g in g_d], t_d, c=t_d, s=scatter_size, cmap=rock, vmin=t_range[0], vmax = t_range[1])
+	axs.scatter(g_a, t_a, c=t_a, s=scatter_size, cmap=rock, vmin=t_range[0], vmax = t_range[1])
+	axs.set(ylim=t_range, ylabel = 'transfer resistance (M\u03A9)', xlabel = 'distance from pSIZ (\u03BCm)')
+
+
 def fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
 						i_a, r_a, t_a, g_a,
 						target_name = 'L1', i_range=[0,4000], t_range=[0,1700]):
@@ -1835,6 +2055,7 @@ def fig_zi_vs_k():
 def plot_imp_on_dendrites(custom_var = 'transfer', var_min = 0, var_max = 1700):
 	'''plot z_c/z_i/k onto the 2D morphology of a neuron
 		NOTE: change colormap by altering nrn.def file in C:/nrn/lib/
+		NOTE: the code is NOT executable as a function, copy paste into command line
 	'''
 
 	custom_var = 'transfer'
@@ -1864,16 +2085,6 @@ def plot_imp_on_dendrites(custom_var = 'transfer', var_min = 0, var_max = 1700):
 	ps = h.PlotShape(True)
 	ps.scale(var_min, var_max)
 	ps.scale(var_min, var_max)
-
-	### passive norm plots for local5
-	custom_var = 'input'
-	visualize_inputs(target_name = 'local5', target_body_id = 5813105722, input_name = None)
-	i_d, r_d, t_d, g_d = visualize_custom_var(prox_sec = 195, custom_var = custom_var) # dendrite 
-	i_a, r_a, t_a, g_a = visualize_custom_var(prox_sec = 996, custom_var = custom_var) # axons
-	fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
-						i_a, r_a, t_a, g_a,
-						target_name = 'local5', i_range=[0,3500], t_range=[0,800])
-	plt.show() # to generate and save the figure
 
 	''' code to print RGB values for magma colormap (close to seaborn's rocket), to plug
 		into a shape.cm file for nrn.def to read
@@ -2031,6 +2242,52 @@ def plot_dendritic_attrs(target_neuron_file = 'LHN_list_siz_dendr_locs.csv', toP
 
 	return arbor_fits
 
+def compare_dendr_axon_linearity(target_neuron_file = 'LHN_list_siz_dendr_locs.csv'):
+	'''fit lines to the axonal and dendritic arbors, compare slopes of 
+		the two sets of best fit lines'''
+
+	nrns = pd.read_csv(target_neuron_file)
+
+	arbor_fits = []
+	for i, row in nrns.iterrows():
+		if pd.notna(row['prox_dendr_sec']):
+
+			target_name, target_body_id = row['lhn'], row['lhn_id']
+			isLocal = False
+			if 'local' in target_name:
+				isLocal = True
+
+			d_branch_sec, d_branch_seg = int(row['dendr_branch_out_sec']), float(row['dendr_branch_out_seg'])
+			a_branch_sec, a_branch_seg = int(row['ax_branch_out_sec']), float(row['ax_branch_out_seg'])
+
+			# evaluate dendritic arbor (after first branch point)
+			gd, zi, zc, k, branchout_dist = subtree_imp_props(target_name, target_body_id, 
+												d_branch_sec, d_branch_seg)
+			arbor_fit = stats.linregress(gd, zc)
+			toAppend = {'lhn': target_name, 'lhn_id': target_body_id, 'is_local': isLocal, 
+							'slope_dendr': arbor_fit.slope, 'intercept_dendr': arbor_fit.intercept,
+							'r2_dendr': arbor_fit.rvalue**2}
+
+			# evaluate axonal arbor (after first branch point)
+			gd, zi, zc, k, branchout_dist = subtree_imp_props(target_name, target_body_id, 
+												a_branch_sec, a_branch_seg)
+			arbor_fit = stats.linregress(gd, zc)
+
+			toAppend.update(slope_ax=arbor_fit.slope, intercept_ax = arbor_fit.intercept,
+							r2_ax=arbor_fit.rvalue**2)
+
+			arbor_fits.append(toAppend)
+	arbor_fits = pd.DataFrame(arbor_fits)
+	# quick and dirty plot comparing slopes of dendrite and axon
+	# 21-01-19_dendr_vs_ax_linearity.csv
+	a = arbor_fits
+	plt.scatter(a.loc[~a.is_local]['slope_dendr'], a.loc[~a.is_local]['slope_ax'], label = 'output neurons')
+	plt.scatter(a.loc[a.is_local]['slope_dendr'], a.loc[a.is_local]['slope_ax'], label = 'local neurons')
+	plt.legend()
+	plt.plot([0,-10], [0,-10], ls = 'dashed')
+	plt.show()
+	return arbor_fits
+
 def analyze_arbor_fits(arbor_fits):
 
 	lhns_colormap = {}
@@ -2045,8 +2302,7 @@ def analyze_arbor_fits(arbor_fits):
 	ax.legend()
 
 	#boxplot
-	sns.boxplot(x='lhn', y='slope', data=f)
-
+	sns.boxplot(x='lhn', y='slope', data=arbor_fits)
 	#compare DIS vs arbor fits
 	plt.hist(arbor_fits.loc[arbor_fits['fit_type']=='arbor']['slope'], label = 'arbor fit', alpha = 0.3, bins = 10)
 	plt.hist(arbor_fits.loc[arbor_fits['fit_type']=='DIS']['slope'], label = 'dendritic initial section fit', alpha=0.3, bins=10)
@@ -2058,7 +2314,7 @@ def analyze_arbor_fits(arbor_fits):
 	plt.xlabel('r^2')
 
 def subtree_imp_props(target_name, target_body_id, dendr_sec, dendr_seg,
-						branchout_sec, branchout_seg):
+						branchout_sec = None, branchout_seg = None):
 	'''given an LHN and a proximal dendritic section and segment, 
 		measure the impedance properties of that section's subtree, 
 		referenced to that section'''
@@ -2131,7 +2387,10 @@ def analyze_passive_norm():
 	t_ss = sum([(z - mean(norm_zi))**2 for z in norm_zi])
 	Rsqu = 1 - r_ss/t_ss
 
-def probe_len_thick_AIS(target_neuron='local5', ):
+def probe_len_thick_AIS(target_neuron= 'local5', target_body_id = 5813105722,
+						dendr_input = 'VA6_adPN', axon_input = 'VL2a_adPN',
+						ais = 1002, uEPSP_measure_sec = 996, uEPSP_measure_seg = 0.5,
+						toPrune = True):
 	'''
 		given a neuron and its axon initial section (local5 or local6) and one input
 		targeting the axon and one targeting the dendrite, 
@@ -2140,17 +2399,88 @@ def probe_len_thick_AIS(target_neuron='local5', ):
 
 		for each combination of thicken and shorten, run a sub-method which produces the 
 			EPSP sizes of VL2a and VA6
+
+		target_neuron= 'local5', target_body_id = 5813105722,
+						dendr_input = 'VA6_adPN', axon_input = 'VL2a_adPN',
+						ais = 1002, uEPSP_measure_sec = 996, uEPSP_measure_seg = 0.5,
+						toPrune = True
+		target_neuron= 'local6', target_body_id = 386825553,
+						dendr_input = 'DA4l_adPN', axon_input = 'VL2a_adPN',
+						ais = 1002, uEPSP_measure_sec = 996, uEPSP_measure_seg = 0.5,
+						toPrune = True
 	'''
 
-	### passive norm plots for local5
-	custom_var = 'input'
-	visualize_inputs(target_name = 'local5', target_body_id = 5813105722, input_name = None)
-	i_d, r_d, t_d, g_d = visualize_custom_var(prox_sec = 195, custom_var = custom_var) # dendrite 
-	i_a, r_a, t_a, g_a = visualize_custom_var(prox_sec = 996, custom_var = custom_var) # axons
-	fig_imp_props_vs_gd(i_d, r_d, t_d, g_d,
-						i_a, r_a, t_a, g_a,
-						target_name = 'local5', i_range=[0,3500], t_range=[0,800])
-	plt.show() # to generate and save the figure
+	thickness_range = np.arange(-0.3, 1.4, 0.1)
+	length_range = np.arange(-60, 31, 5)
+	#thickness_range = np.arange(-0.3, 1.0, 0.5)
+	#length_range = np.arange(-60, 31, 40)
+
+	conns = fetch_simple_connections(upstream_criteria = dendr_input, downstream_criteria = target_body_id)
+	pre_bodyIds = conns.bodyId_pre
+	dendr_syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
+	conns = fetch_simple_connections(upstream_criteria = axon_input, downstream_criteria = target_body_id)
+	pre_bodyIds = conns.bodyId_pre
+	axon_syn_locs = fetch_synapse_connections(source_criteria = pre_bodyIds, target_criteria = target_body_id)
+
+	if toPrune:
+		dendr_syn_locs = dendr_syn_locs.iloc[0:len(axon_syn_locs)]	
+
+	AIS_change_siz = pd.DataFrame(columns = list(length_range))
+	AIS_change_soma = pd.DataFrame(columns = list(length_range))
+	AIS_change_soma_t = pd.DataFrame(columns = list(length_range))
+	for t in thickness_range:
+		EPSPs_per_thickness_siz = []
+		EPSPs_per_thickness_soma = []
+		t_per_thickness_soma = []
+		for l in length_range:
+			dendr_EPSP_siz, dendr_EPSP_soma, dendr_t10to90_siz = change_AIS_sim_EPSP(target_neuron, target_body_id, dendr_input,
+												uEPSP_measure_sec, uEPSP_measure_seg, dendr_syn_locs, ais, t, l)
+			axon_EPSP_siz, axon_EPSP_soma, axon_t10to90_siz = change_AIS_sim_EPSP(target_neuron, target_body_id, axon_input,
+												uEPSP_measure_sec, uEPSP_measure_seg, axon_syn_locs, ais, t, l)
+			EPSPs_per_thickness_siz.append(dendr_EPSP_siz - axon_EPSP_siz)
+			EPSPs_per_thickness_soma.append(dendr_EPSP_soma - axon_EPSP_soma)
+			t_per_thickness_soma.append(dendr_t10to90_siz - axon_t10to90_siz)
+
+		AIS_change_siz.loc[t] = EPSPs_per_thickness_siz
+		AIS_change_soma.loc[t] = EPSPs_per_thickness_soma
+		AIS_change_soma_t.loc[t] = t_per_thickness_soma
+
+	return AIS_change_siz, AIS_change_soma, AIS_change_soma_t
+	#ax = sns.heatmap(AIS_change_matrix)
+
+
+def change_AIS_sim_EPSP(target_neuron, target_body_id, input_neuron, 
+							uEPSP_measure_sec, uEPSP_measure_seg, syn_locs, ais, t, l):
+	''' t: amount to thicken/thin; l: amount to lengthen/shorten, in micrometers
+	'''
+
+	# instantiate neuron and synapses
+	cell1, curr_syns, netstim, netcons, num = visualize_inputs(target_name = target_neuron, 
+													target_body_id = target_body_id, 
+													input_name = input_neuron, 
+													syn_locs = syn_locs)
+
+	# alter AIS length and thickness
+	cell1.axon[ais].L = cell1.axon[ais].L + l
+	for seg in cell1.axon[ais]:
+		seg.diam = seg.diam + t
+
+	# simulate EPSP
+	# measure uEPSP for connection at pSIZ and distal axon and soma
+	netstim.number = 1 # activate stim
+	h.load_file('stdrun.hoc')
+	x = h.cvode.active(True)
+	v_siz = h.Vector().record(cell1.axon[uEPSP_measure_sec](uEPSP_measure_seg)._ref_v)
+	v_soma = h.Vector().record(cell1.axon[0](0.5)._ref_v)
+	t = h.Vector().record(h._ref_t)                     				# Time stamp vector
+	h.finitialize(-55 * mV)
+	h.continuerun(40*ms)
+	netstim.number = 0 # de-activate stim
+	# measure rise time of EPSP at pSIZ
+	t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
+
+	# TODO: change output to dictionary {'siz': value, 'soma': value} to be more scalable
+	return max(v_siz), max(v_soma), t_10to90_siz
 
 def testTimingDiffs(target_name = 'local5', target_body_id = 5813105722,
 					input1 = 'VA6_adPN', input2 = 'VL2a_adPN', 
