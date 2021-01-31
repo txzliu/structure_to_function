@@ -1846,7 +1846,7 @@ def assign_SWC_PointNo_to_NEURON_tree(target_name = 'local6', target_body_id = 4
 
 	return pointno_to_sec
 
-def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name = None,
+def visualize_inputs(target_name = 'local5', target_body_id = 5813105722, input_name = 'VA6_adPN',
 						syn_locs = pd.DataFrame()):
 	'''
 		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
@@ -1922,7 +1922,9 @@ def visualize_inputs(target_name = 'V2', target_body_id = 852302504, input_name 
 		if not syn_locs.empty: # if synapse locs are pre-loaded, then use those locations
 			pass # synapse locs are pre-loaded
 		elif input_name == 'all_inputs': # find all incoming synapses
-			syn_locs = fetch_synapse_connections(target_criteria = target_body_id)
+			min_weight = 3
+			print(f'fetching all input synapse locations >{min_weight} synapses')
+			syn_locs = fetch_synapse_connections(target_criteria = target_body_id, min_total_weight = min_weight)
 		else:
 			conns = fetch_simple_connections(upstream_criteria = input_name, downstream_criteria = target_body_id)
 			pre_bodyIds = conns.bodyId_pre
@@ -2785,6 +2787,7 @@ def fig_seq_PN_activ(preload = True, plot_dVdt = False, plot_loc = 'prox_axon', 
 	#ax.spines['top'].set_visible(False), ax.spines['right'].set_visible(False)
 	l = ax[1].legend(loc = 'upper right', frameon = False, prop = {'size': 7}, handlelength=0)
 	l.get_texts()[0].set_color('purple'), l.get_texts()[1].set_color('orange')
+	# set legend text color: https://stackoverflow.com/questions/18909696/how-to-change-the-text-color-of-font-in-legend
 	add_scalebar(ax = ax[1], xlen=10, ylen=2, xlab=' ms', ylab=' mV', loc = 'lower right')
 	plt.tight_layout()
 	plt.savefig('figs\\seq_PN_activ_exTraces.svg')
@@ -2831,26 +2834,44 @@ def plot_peak_dVdt(plot_loc, v, t, input1, input2, netstim2start):
 
 	'''
 
-def mEPSPs_for_all_LHNs():
+def mEPSPs_for_all_LHNs(lhn_morph_path = 'LHN_list_siz_dendr_locs.csv'):
 	'''given list of LHNs, i.e. LHN_list_siz_dendr_locs, probe ALL mEPSPs 
 		and provide information for each synapse, i.e. amplitude, rise times, 
 		and critically, whether it's dendritic or axonal'''
 
-	# read in list of LHNs
+	# read in list of LHNs and morphology information
+	lhn_list = pd.read_csv(lhn_morph_path)
 
-	for lhn in lhn_list:
+	all_LHN_mEPSP_df = pd.DataFrame()
+	for ind, row in lhn_list.iterrows():
 
-		mEPSP_out = probe_mEPSPs(target_name = lhn, target_body_id = lhn_body_id, 
-									input_name = 'all_inputs')
+		lhn_name, lhn_body_id = row.lhn, row.lhn_id
+		lhn_siz_sec, lhn_siz_seg = row.siz_sec, row.siz_seg
 
+		if 'CML2' in lhn_name or lhn_body_id==5813055963: 
+		# skip CML2 due to its bilaterally-projecting nature and the unlabelled local2
+			continue 
+
+		mEPSP_out = probe_mEPSPs(target_name = lhn_name, target_body_id = lhn_body_id, 
+									input_name = 'all_inputs',
+									siz_sec = lhn_siz_sec, siz_seg = lhn_siz_seg,
+									toPlot = False)
+
+		all_LHN_mEPSP_df = all_LHN_mEPSP_df.append(mEPSP_out)
+
+	date = datetime.today().strftime("%y-%m-%d")
+	all_LHN_mEPSP_df.to_csv(f'{date}_mEPSPs_for_all_LHNs.csv')
+
+	return all_LHN_mEPSP_df
 
 def probe_mEPSPs(target_name = 'ML9', target_body_id = 542634516, input_name = 'DP1m_adPN',
 					siz_sec = 569, siz_seg = 0.01,
-					toPlot = True, ):
+					toPlot = False, lhn_morph_path = 'LHN_list_siz_dendr_locs.csv'):
 	'''
 		given a downstream (target_name) neuron + ID, an upstream neuron, instantiate synapses
 		(potentially pulling from neuprint) and simulate each mEPSP individually, allowing for
-		recording of mEPSP amplitude, kinetics, etc. 
+		recording of mEPSP amplitude, kinetics, location of synapse in axon vs dendrite 
+		(based on lhn_morph_path CSV NEURON coordinates) etc. 
 
 		input_name: string; upstream input name, i.e. "DP1m_adPN", or "all_inputs" to simulate
 							mEPSPs for all synaptic inputs
@@ -2863,6 +2884,12 @@ def probe_mEPSPs(target_name = 'ML9', target_body_id = 542634516, input_name = '
 	cell1, curr_syns, netstim, netcons, num = visualize_inputs(target_name = target_name, 
 												target_body_id = target_body_id, input_name = input_name)
 
+	# read in proximal axon and dendrite section: 
+	if lhn_morph_path:
+		lhn_list = pd.read_csv(lhn_morph_path)
+		morph_locs = lhn_list.loc[(lhn_list.lhn==target_name) & (lhn_list.lhn_id==target_body_id)] \
+						[['dendr_branch_out_sec', 'ax_branch_out_sec', 'siz_sec', 'siz_seg']].iloc[0]
+		dendr_branch_out_sec, ax_branch_out_sec, siz_sec, siz_seg = [int(m) for m in morph_locs]
 
 
 	# first set all synapses to weight 0
@@ -2877,7 +2904,7 @@ def probe_mEPSPs(target_name = 'ML9', target_body_id = 542634516, input_name = '
 		# activate a single synapse
 		netcons.object(i).weight[0] = syn_strength
 		if i % 20 == 1:
-			print("activating synapse " + str(i))
+			print("probing mEPSP for synapse " + str(i))
 
 		# measure mEPSP for connection at pSIZ 
 		# activate the stim
@@ -2894,10 +2921,21 @@ def probe_mEPSPs(target_name = 'ML9', target_body_id = 542634516, input_name = '
 		# measure rise time of EPSP at pSIZ
 		t_10to90_siz = time_to_percent_peak(t, v_siz, 0.90) - time_to_percent_peak(t, v_siz, 0.10)
 		t_10to90_soma = time_to_percent_peak(t, v_soma, 0.90) - time_to_percent_peak(t, v_soma, 0.10)
+		# determine if synapse is in axon or dendrite subtree
+		ax_vs_dendr_loc = 'unknown'
+		if str(curr_syns.object(i).get_segment()).partition('(')[0] in \
+				[str(val) for val in cell1.axon[dendr_branch_out_sec].subtree()]:
+			ax_vs_dendr_loc = 'dendritic'
+		elif str(curr_syns.object(i).get_segment()).partition('(')[0] in \
+				[str(val) for val in cell1.axon[ax_branch_out_sec].subtree()]:
+			ax_vs_dendr_loc = 'axonal'
 
 		toAppend = {}
 		# TODO: output location of synapse and whether it's AXONAL or DENDRITIC (or "unknown")
-		toAppend.update(synapse_number = i, mEPSP_siz = max(list(v_siz))+55, mEPSP_soma = max(list(v_soma))+55,
+		toAppend.update(target_name = target_name, target_body_id = target_body_id,
+							input_name = input_name,	
+							synapse_number = i, ax_v_dendr = ax_vs_dendr_loc,
+							mEPSP_siz = max(list(v_siz))+55, mEPSP_soma = max(list(v_soma))+55,
 							mEPSP_t10to90_siz = t_10to90_siz,
 							mEPSP_t10to90_soma = t_10to90_soma,
 							syn_count = len(curr_syns),
@@ -2920,19 +2958,83 @@ def probe_mEPSPs(target_name = 'ML9', target_body_id = 542634516, input_name = '
 
 		axs[0,0].scatter(per_synapse_data.dist_to_siz, per_synapse_data.mEPSP_siz)
 		axs[0,0].set_xlabel('distance to SIZ (um)'), axs[0,0].set_ylabel('mEPSP @ SIZ (mV)')
-
 		axs[0,1].scatter(per_synapse_data.local_diam, per_synapse_data.mEPSP_siz)
 		axs[0,1].set_xlabel('local diameter (um)'), axs[0,1].set_ylabel('mEPSP @ SIZ (mV)')
-
 		axs[1,0].scatter(per_synapse_data.dist_to_siz, per_synapse_data.mEPSP_t10to90_siz)
 		axs[1,0].set_xlabel('distance to SIZ (um)'), axs[1,0].set_ylabel('t 10 to 90% peak @ SIZ (ms)')
-
 		axs[1,1].scatter(per_synapse_data.local_diam, per_synapse_data.mEPSP_t10to90_siz)
 		axs[1,1].set_xlabel('local diameter (um)'), axs[1,1].set_ylabel('t 10 to 90% peak @ SIZ (ms)')
 
 		fig.suptitle(f"{input_name} inputs onto {target_name} {target_body_id}")
 
 	return per_synapse_data
+
+def fit_mEPSPriseT_vs_gd_ax_v_dendr(mEPSP_prop_path = '21-01-31_mEPSPs_for_all_LHNs.csv',
+		plot_ax_v_dendr_slopes = True):
+	'''across all LHNs, compare average change in mEPSP rise time vs distance from soma
+		for axonal synapses vs dendritic
+		e.g. fit a line to points in mEPSP rise time vs distance from soma plot
+
+	returns: 
+		riseT_v_gd_fits: pd.DataFrame; for each body ID and arbor type (ax vs dendr), the
+							set of relevant parameters for a linear fit to the arbor, i.e.
+							slope, intercept, R^2'''
+
+	mEPSP_props = pd.read_csv(mEPSP_prop_path)
+
+	riseT_v_gd_fits = []
+	for (lhn_name, lhn_id, ax_v_dendr), sub_df in \
+			mEPSP_props.groupby(['target_name', 'target_body_id', 'ax_v_dendr']):
+		if ax_v_dendr == 'unknown':
+			continue
+
+		rise_time_fit = stats.linregress(sub_df.dist_to_soma, sub_df.mEPSP_t10to90_soma)
+		toAppend = {'lhn_name': lhn_name, 'lhn_id': lhn_id, 
+			'arbor_type': ax_v_dendr, 'num_points': len(sub_df.dist_to_soma),
+			'slope': rise_time_fit.slope, 'intercept': rise_time_fit.intercept,
+			'r^2': rise_time_fit.rvalue**2}
+
+		riseT_v_gd_fits.append(toAppend)
+	riseT_v_gd_fits = pd.DataFrame(riseT_v_gd_fits)
+
+	if plot_ax_v_dendr_slopes:
+		try:
+			fig_all_LHN_mEPSP_timing_ax_vs_dendr(riseT_v_gd_fits)
+		except:
+			print('plot error')
+
+	date = datetime.today().strftime("%y-%m-%d")
+	riseT_v_gd_fits.to_csv(f'{date} fit_mEPSPriseT_vs_gd_ax_v_dendr.csv')
+	return riseT_v_gd_fits	
+
+def fig_all_LHN_mEPSP_timing_ax_vs_dendr(riseT_v_gd_fits, preload = True):
+	if preload:
+		riseT_v_gd_fits = pd.read_csv('21-01-31 fit_mEPSPriseT_vs_gd_ax_v_dendr.csv')
+
+	lhns_colormap = {}
+	import matplotlib
+	rainbow = matplotlib.cm.get_cmap('hsv')
+	for i, lhn in enumerate(riseT_v_gd_fits.lhn_name.unique()):
+		lhns_colormap[lhn] = rainbow(i * 1/len(riseT_v_gd_fits.lhn_name.unique()))
+
+	fig, ax = plt.subplots(1,1, figsize = (2,2))
+	for (lhn_name, lhn_id), sub_df in riseT_v_gd_fits.groupby(['lhn_name', 'lhn_id']):
+		print('plotting ', lhn_name, lhn_id)
+		dendr_slope = sub_df.loc[sub_df.arbor_type.str.contains('dendr')]['slope']
+		ax_slope = sub_df.loc[sub_df.arbor_type.str.contains('ax')]['slope']
+		try:
+			if sub_df.iloc[0]['num_points'] > 2:
+				ax.scatter(dendr_slope, ax_slope, color = lhns_colormap[lhn_name], s = 3)
+			else:
+				print(f'{lhn_name} {lhn_id} dendr and ax slope error')
+		except:
+			print('only axon or dendrite synapses found')
+
+	ax.plot([0, 0.025], [0, 0.025], color = 'grey', alpha = 0.3, ls = 'dashed')
+	ax.spines['top'].set_visible(False), ax.spines['right'].set_visible(False)
+	ax.set(xlabel = 'dendritic rise time slope', ylabel = 'axonal rise time slope')
+	
+	plt.savefig('figs\\all_LHN_mEPSP_timing_ax_vs_dendr.svg')
 
 def fig_local5_VA6_VL2a_mEPSP_timing(preload = True):
 	'''plot the mEPSP rise time vs geodesic distance for VL2a and VA6 inputs onto local5
@@ -2956,16 +3058,20 @@ def fig_local5_VA6_VL2a_mEPSP_timing(preload = True):
 						siz_sec = 996, siz_seg = 0.5,
 						toPlot = False)
 
-	fig, ax = plt.subplots(1,2,figsize=(4,2))
-	ax[0].scatter(syn_info_VA6.dist_to_soma, syn_info_VA6.mEPSP_t10to90_soma, label='VA6', 
+	fig, ax = plt.subplots(1,1,figsize=(2,2))
+	ax.scatter(syn_info_VA6.dist_to_soma, syn_info_VA6.mEPSP_t10to90_soma, label='VA6', 
 					color='red', alpha = 0.5, s = 3)
-	ax[0].scatter(syn_info_VL2a.dist_to_soma, syn_info_VL2a.mEPSP_t10to90_soma, label='VL2a', 
+	ax.scatter(syn_info_VL2a.dist_to_soma, syn_info_VL2a.mEPSP_t10to90_soma, label='VL2a', 
 					color='blue', alpha = 0.5, s = 3)
-	ax[0].set(xlabel = 'distance from soma (\u03BCm)', ylabel = 'mEPSP rise time (ms)')
-	ax[0].spines['top'].set_visible(False), ax[0].spines['right'].set_visible(False)
-	l = ax[0].legend(loc = 'upper left', frameon = False, prop = {'size': 7}, handlelength=0)
+	ax.set(xlabel = 'distance from soma (\u03BCm)', ylabel = 'mEPSP rise time (ms)')
+	ax.spines['top'].set_visible(False), ax[0].spines['right'].set_visible(False)
+	l = ax.legend(loc = 'upper left', frameon = False, prop = {'size': 7}, handlelength=0)
 	l.get_texts()[0].set_color('red'), l.get_texts()[1].set_color('blue')
 
+	# TODO: add best fit lines
+	plt.show()
+
+	fig, ax = plt.subplots(1,1,figsize=(2,2))
 	# plot traces: closest and farthest VL2a and VA6 (restrict VA6 to dendrite MANUALLY)
 	c_VL2a_idx = syn_info_VL2a.dist_to_soma.argmin()
 	f_VL2a_idx = syn_info_VL2a.dist_to_soma.argmax()
@@ -2979,30 +3085,30 @@ def fig_local5_VA6_VL2a_mEPSP_timing(preload = True):
 					   [(v+55)*1000 for v in syn_info_VA6.iloc[c_VA6_idx]['v_trace_soma']]
 	f_VA6_t, f_VA6_v = syn_info_VA6.iloc[f_VA6_idx]['t_trace'], \
 					   [(v+55)*1000 for v in syn_info_VA6.iloc[f_VA6_idx]['v_trace_soma']]
-	ax[1].plot(c_VL2a_t, c_VL2a_v, color='blue')
-	ax[1].plot(f_VL2a_t, f_VL2a_v, color='blue')
-	ax[1].plot(c_VA6_t, c_VA6_v, color='red')
-	ax[1].plot(f_VA6_t, f_VA6_v, color='red')
-	ax[1].set(xlabel = 'time (ms)', ylabel = 'mEPSP recording at soma (\u03BCV)',
+	ax.plot(c_VL2a_t, c_VL2a_v, color='blue')
+	ax.plot(f_VL2a_t, f_VL2a_v, color='blue')
+	ax.plot(c_VA6_t, c_VA6_v, color='red')
+	ax.plot(f_VA6_t, f_VA6_v, color='red')
+	ax.set(xlabel = 'time (ms)', ylabel = 'mEPSP recording at soma (\u03BCV)',
 				ylim = [-10, 104], xlim = [0, 20]) # set range to allow for text, arrows, scalebar
 
 	# add vertical and horizontal scale bar
 	#add_scalebar(ax = ax[1], xlen=5, ylen=10, xlab=' ms', ylab=' \u03BCV', loc = 'lower right')
 
 	# add double sided arrows to denote rise times of peaks
-	ax[1].annotate("", xy=(time_to_percent_peak(c_VL2a_t, c_VL2a_v, 0.10), -2), xycoords='data',
+	ax.annotate("", xy=(time_to_percent_peak(c_VL2a_t, c_VL2a_v, 0.10), -2), xycoords='data',
             xytext=(time_to_percent_peak(c_VL2a_t, c_VL2a_v, 0.90),-2), textcoords='data',
             arrowprops=dict(arrowstyle="<->",
                             connectionstyle="arc3", color='b', lw=1),)
-	ax[1].annotate("", xy=(time_to_percent_peak(f_VL2a_t, f_VL2a_v, 0.10), -6), xycoords='data',
+	ax.annotate("", xy=(time_to_percent_peak(f_VL2a_t, f_VL2a_v, 0.10), -6), xycoords='data',
             xytext=(time_to_percent_peak(f_VL2a_t, f_VL2a_v, 0.90),-6), textcoords='data',
             arrowprops=dict(arrowstyle="<->",
                             connectionstyle="arc3", color='b', lw=1),)
-	ax[1].annotate("", xy=(time_to_percent_peak(c_VA6_t, c_VA6_v, 0.10), 100), xycoords='data',
+	ax.annotate("", xy=(time_to_percent_peak(c_VA6_t, c_VA6_v, 0.10), 100), xycoords='data',
             xytext=(time_to_percent_peak(c_VA6_t, c_VA6_v, 0.90), 100), textcoords='data',
             arrowprops=dict(arrowstyle="<->",
                             connectionstyle="arc3", color='r', lw=1),)
-	ax[1].annotate("", xy=(time_to_percent_peak(f_VA6_t, f_VA6_v, 0.10), 104), xycoords='data',
+	ax.annotate("", xy=(time_to_percent_peak(f_VA6_t, f_VA6_v, 0.10), 104), xycoords='data',
             xytext=(time_to_percent_peak(f_VA6_t, f_VA6_v, 0.90), 104), textcoords='data',
             arrowprops=dict(arrowstyle="<->",
                             connectionstyle="arc3", color='r', lw=1),)
@@ -3018,16 +3124,16 @@ def fig_local5_VA6_VL2a_mEPSP_timing(preload = True):
 						ymax=np.interp(time_to_percent_peak(trace_t, trace_v, 0.90), trace_t, trace_v),
 						colors=color, ls='dashed', alpha=0.3)
 
-	add_vline(ax=ax[1], trace_t=c_VL2a_t, trace_v=c_VL2a_v, ylevel=-2, color='blue')
-	add_vline(ax=ax[1], trace_t=f_VL2a_t, trace_v=f_VL2a_v, ylevel=-6, color='blue')
-	add_vline(ax=ax[1], trace_t=c_VA6_t, trace_v=c_VA6_v, ylevel=100, color='red')
-	add_vline(ax=ax[1], trace_t=f_VA6_t, trace_v=f_VA6_v, ylevel=104, color='red')
+	add_vline(ax=ax, trace_t=c_VL2a_t, trace_v=c_VL2a_v, ylevel=-2, color='blue')
+	add_vline(ax=ax, trace_t=f_VL2a_t, trace_v=f_VL2a_v, ylevel=-6, color='blue')
+	add_vline(ax=ax, trace_t=c_VA6_t, trace_v=c_VA6_v, ylevel=100, color='red')
+	add_vline(ax=ax, trace_t=f_VA6_t, trace_v=f_VA6_v, ylevel=104, color='red')
 
 	# add text annotations
-	ax[1].text(x = time_to_percent_peak(c_VA6_t, c_VA6_v, 0.10) + 1, y = 112, size = 7, color = 'red', \
+	ax.text(x = time_to_percent_peak(c_VA6_t, c_VA6_v, 0.10) + 1, y = 112, size = 7, color = 'red', \
 				s = f"{str(round(syn_info_VA6.iloc[c_VA6_idx]['mEPSP_t10to90_soma'], 2))} ms" +
 					f" to {str(round(syn_info_VA6.iloc[f_VA6_idx]['mEPSP_t10to90_soma'], 2))} ms")
-	ax[1].text(x = time_to_percent_peak(c_VA6_t, c_VA6_v, 0.10) + 1, y = -18, size = 7, color = 'blue', \
+	ax.text(x = time_to_percent_peak(c_VA6_t, c_VA6_v, 0.10) + 1, y = -18, size = 7, color = 'blue', \
 				s = f"{str(round(syn_info_VL2a.iloc[c_VL2a_idx]['mEPSP_t10to90_soma'], 2))} ms" + 
 					f" to {str(round(syn_info_VL2a.iloc[f_VL2a_idx]['mEPSP_t10to90_soma'], 2))}")
 
